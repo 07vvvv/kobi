@@ -52,7 +52,31 @@ jobs:
           ./gradlew --version
 
       - name: Build debug and release APK
-        run: ./gradlew assembleDebug assembleRelease --stacktrace
+        run: |
+          set +e
+          ./gradlew assembleDebug assembleRelease --stacktrace --console=plain > /tmp/build.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            # 提取编译错误摘要。写入 job summary 与注解，便于在无法下载日志时
+            # （例如无 token 的匿名 API 调用）仍能读到第一手错误信息。
+            grep -E "^e: |error:|FAILURE: Build|What went wrong|Execution failed for task|Caused by:|> Task .*FAILED|Could not (resolve|find|determine)" /tmp/build.log \
+              | head -60 > /tmp/errors.txt || true
+            if [ ! -s /tmp/errors.txt ]; then tail -100 /tmp/build.log > /tmp/errors.txt; fi
+
+            {
+              echo "## Build failed - error summary"
+              echo '```'
+              cat /tmp/errors.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            cat /tmp/errors.txt
+            head -20 /tmp/errors.txt | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error title=Compile error::$line"
+            done
+            exit 1
+          fi
+          echo "Build succeeded" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect APKs
         run: |
