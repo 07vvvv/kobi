@@ -1,0 +1,26 @@
+# 跨平台换行符策略。
+#
+# 必要性：本工程在 Windows 上开发、在 Linux runner 上构建。
+# `gradlew` 是 shell 脚本，若以 CRLF 存进仓库，Linux 上执行会报
+#   bad interpreter: /bin/sh^M
+# 而这个问题在本机（Windows）完全看不出来，只会在 CI 上炸。
+#
+# gradle-wrapper.jar 与 keystore 是二进制，必须显式声明，避免被当作文本处理而损坏。
+
+* text=auto
+
+gradlew   text eol=lf
+*.sh      text eol=lf
+*.bat     text eol=crlf
+*.kt      text
+*.kts     text
+*.xml     text
+*.pro     text
+*.md      text
+
+*.jar     binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.webp    binary
+*.keystore binary

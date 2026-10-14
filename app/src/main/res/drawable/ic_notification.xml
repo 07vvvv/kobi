@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标：必须是单色（系统会按通知栏主题重新着色），
+     因此这里只用白色描边图形，不使用彩色填充。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+
+    <!-- 课表外框 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M4,4h16v16h-16z M6,6v3h12v-3z M6,10.5v2h5v-2z M13,10.5v2h5v-2z M6,14.5v2h5v-2z M13,14.5v2h5v-2z" />
+</vector>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 通知自定义布局中的「星期格子」样式。
+         RemoteViews 支持的控件有限，这里只用 LinearLayout + TextView + shape 背景，
+         全部属于 RemoteViews 官方支持的范围。 -->
+    <style name="KobiNotifDayCell">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginStart">2dp</item>
+        <item name="android:layout_marginEnd">2dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingTop">7dp</item>
+        <item name="android:paddingBottom">7dp</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">@color/kobi_notif_day_text</item>
+        <item name="android:background">@drawable/bg_notif_day_cell</item>
+    </style>
+</resources>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="kobi_window_background">#FFFBFE</color>
+    <color name="kobi_window_background_dark">#111318</color>
+
+    <!-- 通知自定义布局（notification_timetable.xml）的正文颜色。
+         浅色模式下通知底色为白色，故用深色字；夜间模式见 values-night/colors.xml。 -->
+    <color name="kobi_notif_title">#111318</color>
+    <color name="kobi_notif_subtitle">#6B7280</color>
+
+    <!-- 星期格子：底色恒为浅色（bg_notif_day_cell），因此两种情况都用深色字 -->
+    <color name="kobi_notif_day_text">#1B2230</color>
+</resources>

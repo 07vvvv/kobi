@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用图标：纯矢量实现，不依赖任何位图资源 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 底色 -->
+    <path
+        android:fillColor="#4F8CFF"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- 顶部标题条 -->
+    <path
+        android:fillAlpha="0.92"
+        android:fillColor="#FFFFFF"
+        android:pathData="M22,24h64v10h-64z" />
+
+    <!-- 课表网格：3 列 x 3 行，其中一格高亮 -->
+    <path
+        android:fillAlpha="0.42"
+        android:fillColor="#FFFFFF"
+        android:pathData="M22,42h18v16h-18z" />
+    <path
+        android:fillAlpha="0.42"
+        android:fillColor="#FFFFFF"
+        android:pathData="M45,42h18v16h-18z" />
+    <path
+        android:fillColor="#FFD166"
+        android:pathData="M68,42h18v16h-18z" />
+
+    <path
+        android:fillAlpha="0.42"
+        android:fillColor="#FFFFFF"
+        android:pathData="M22,63h18v16h-18z" />
+    <path
+        android:fillAlpha="0.42"
+        android:fillColor="#FFFFFF"
+        android:pathData="M45,63h18v16h-18z" />
+    <path
+        android:fillAlpha="0.42"
+        android:fillColor="#FFFFFF"
+        android:pathData="M68,63h18v16h-18z" />
+</vector>

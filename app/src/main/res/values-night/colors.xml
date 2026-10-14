@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 夜间模式下系统通知底色是深色，正文必须改用浅色字，否则几乎不可见 -->
+    <color name="kobi_notif_title">#F1F3F4</color>
+    <color name="kobi_notif_subtitle">#BDC1C6</color>
+
+    <!-- 星期格子底色仍为浅色（bg_notif_day_cell 未做夜间变体），保持深色字 -->
+    <color name="kobi_notif_day_text">#1B2230</color>
+</resources>

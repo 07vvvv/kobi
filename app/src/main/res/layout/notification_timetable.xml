@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  通知「自定义布局」的内容区布局，供 DecoratedCustomViewStyle 使用。
+
+  设计约束：RemoteViews 只支持 LinearLayout / FrameLayout / RelativeLayout / GridLayout
+  与 TextView 等有限控件，不支持 ConstraintLayout，也不支持 <include> / <merge>。
+  因此这里全部使用 LinearLayout + TextView，背景用 shape drawable。
+
+  颜色全部走 @color 引用（见 values/colors.xml 与 values-night/colors.xml），
+  以保证夜间模式（系统通知底色为深色）下文字仍然可读。
+  注意：星期格子的底色无法在夜间模式下改变——View.setBackgroundColor 没有
+  @RemotableViewMethod，RemoteViews 调用它会抛 ActionException，故格子保持浅底深字。
+
+  需要 notify 侧填充的 id：
+    nt_title     标题，如「本周课表 · 第 12 周」
+    nt_subtitle  副标题，如「当前：高等数学 A · 教三 305」
+    nt_day1..nt_day5  周一至周五的格子，如「一\n3 节」
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
+
+    <TextView
+        android:id="@+id/nt_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/kobi_notif_title"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/nt_subtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/kobi_notif_subtitle"
+        android:textSize="12sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:baselineAligned="false"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/nt_day1"
+            style="@style/KobiNotifDayCell" />
+
+        <TextView
+            android:id="@+id/nt_day2"
+            style="@style/KobiNotifDayCell" />
+
+        <TextView
+            android:id="@+id/nt_day3"
+            style="@style/KobiNotifDayCell" />
+
+        <TextView
+            android:id="@+id/nt_day4"
+            style="@style/KobiNotifDayCell" />
+
+        <TextView
+            android:id="@+id/nt_day5"
+            style="@style/KobiNotifDayCell" />
+    </LinearLayout>
+</LinearLayout>
