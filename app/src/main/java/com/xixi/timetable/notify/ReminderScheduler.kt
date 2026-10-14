@@ -407,38 +407,36 @@ object ReminderScheduler {
 
     private fun requestCodeOf(triggerAtMillis: Long): Int = (triggerAtMillis / 60_000L).toInt()
 
-    companion object {
 
-        /** 提前量（分钟），默认 60 */
-        const val LEAD_MINUTES: Int = 60
+    /** 提前量（分钟），默认 60 */
+    const val LEAD_MINUTES: Int = 60
 
-        /** 「稍后提醒」推迟时长（分钟） */
-        private const val SNOOZE_MINUTES: Long = 10L
+    /** 「稍后提醒」推迟时长（分钟） */
+    private const val SNOOZE_MINUTES: Long = 10L
 
-        private const val DAY_MILLIS: Long = 24L * 60L * 60L * 1000L
+    private const val DAY_MILLIS: Long = 24L * 60L * 60L * 1000L
 
-        /**
-         * 排程视界：排未来这么多天内的**全部**提醒。
-         *
-         * 为什么取 7 天：现在每门课每天会产生「课前提醒 + 上课开始」两批闹钟，批次数是原来的
-         * 两倍，而批次数还要受 [MAX_ALARM_BATCHES] 约束。7 天 × 典型每天 4 个时段 × 2 类
-         * ≈ 56 批，既不触发截断，又能覆盖完整一周。
-         * 视界变短不会导致断档：任何一次提醒触发都会调用 [refreshHorizonIfNeeded] 自动续期。
-         */
-        private const val HORIZON_DAYS: Int = 7
+    /**
+     * 排程视界：排未来这么多天内的**全部**提醒。
+     *
+     * 为什么取 7 天：现在每门课每天会产生「课前提醒 + 上课开始」两批闹钟，批次数是原来的
+     * 两倍，而批次数还要受 [MAX_ALARM_BATCHES] 约束。7 天 × 典型每天 4 个时段 × 2 类
+     * ≈ 56 批，既不触发截断，又能覆盖完整一周。
+     * 视界变短不会导致断档：任何一次提醒触发都会调用 [refreshHorizonIfNeeded] 自动续期。
+     */
+    private const val HORIZON_DAYS: Int = 7
 
-        /** 单次排程最多排出多少个闹钟批次；超出按时间先后截断（安全阀，不是常态） */
-        private const val MAX_ALARM_BATCHES: Int = 60
+    /** 单次排程最多排出多少个闹钟批次；超出按时间先后截断（安全阀，不是常态） */
+    private const val MAX_ALARM_BATCHES: Int = 60
 
-        /** 剩余排程不足这么多天时，在提醒触发时自动整体重排（滚动续期） */
-        private const val ROLLING_REFRESH_DAYS: Long = 3L
+    /** 剩余排程不足这么多天时，在提醒触发时自动整体重排（滚动续期） */
+    private const val ROLLING_REFRESH_DAYS: Long = 3L
 
-        private const val REQUEST_CODE_CLOCK = 200
+    private const val REQUEST_CODE_CLOCK = 200
 
-        /** API 31+ 必须声明 PendingIntent 可变性；本模块全部为不可变 */
-        private val PENDING_INTENT_FLAGS =
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    }
+    /** API 31+ 必须声明 PendingIntent 可变性；本模块全部为不可变 */
+    private val PENDING_INTENT_FLAGS =
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 }
 
 /** 一条待处理记录：某门课在某个时刻要提醒 / 要开始上课 */

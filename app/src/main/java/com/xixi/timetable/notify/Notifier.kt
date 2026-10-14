@@ -241,184 +241,182 @@ object Notifier {
         }
     }
 
-    companion object {
 
-        /**
-         * 通知栏小图标：单色矢量（`@drawable/ic_notification`）。
-         *
-         * 不能用 `const val` —— AGP 8 起 R 字段默认不是编译期常量（nonFinalResIds）。
-         */
-        private val SMALL_ICON = R.drawable.ic_notification
+    /**
+     * 通知栏小图标：单色矢量（`@drawable/ic_notification`）。
+     *
+     * 不能用 `const val` —— AGP 8 起 R 字段默认不是编译期常量（nonFinalResIds）。
+     */
+    private val SMALL_ICON = R.drawable.ic_notification
 
-        /** 夜间模式下总览标题的浅色（res 未提供 layout-night 变体，故在运行期兜住可读性） */
-        private val COLOR_NIGHT_TITLE = 0xFFF1F3F4.toInt()
+    /** 夜间模式下总览标题的浅色（res 未提供 layout-night 变体，故在运行期兜住可读性） */
+    private val COLOR_NIGHT_TITLE = 0xFFF1F3F4.toInt()
 
-        /** 夜间模式下总览副标题的浅灰 */
-        private val COLOR_NIGHT_SUBTITLE = 0xFFBDC1C6.toInt()
+    /** 夜间模式下总览副标题的浅灰 */
+    private val COLOR_NIGHT_SUBTITLE = 0xFFBDC1C6.toInt()
 
-        private const val IDENTITY_ONGOING = "ongoing"
-        private const val IDENTITY_OVERVIEW = "overview"
+    private const val IDENTITY_ONGOING = "ongoing"
+    private const val IDENTITY_OVERVIEW = "overview"
 
-        private const val REQUEST_CODE_OPEN_APP = 100
-        private const val ACTION_DATA_PREFIX = "kobi://reminder/action"
+    private const val REQUEST_CODE_OPEN_APP = 100
+    private const val ACTION_DATA_PREFIX = "kobi://reminder/action"
 
-        /** API 31+ 起 PendingIntent 必须声明可变性；本应用的所有 PendingIntent 都不需要被改写 */
-        private val PENDING_INTENT_FLAGS =
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    /** API 31+ 起 PendingIntent 必须声明可变性；本应用的所有 PendingIntent 都不需要被改写 */
+    private val PENDING_INTENT_FLAGS =
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
-        private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+    private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
-        /** 发送前的自检：通知权限未授予时静默跳过，绝不抛异常 */
-        fun canPost(context: Context): Boolean {
-            return try {
-                NotificationManagerCompat.from(context.applicationContext).areNotificationsEnabled()
-            } catch (t: Throwable) {
-                false
+    /** 发送前的自检：通知权限未授予时静默跳过，绝不抛异常 */
+    fun canPost(context: Context): Boolean {
+        return try {
+            NotificationManagerCompat.from(context.applicationContext).areNotificationsEnabled()
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /** 点击通知体：打开应用（所有通知共用同一个 PendingIntent） */
+    private fun openAppIntent(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        return PendingIntent.getActivity(context, REQUEST_CODE_OPEN_APP, intent, PENDING_INTENT_FLAGS)
+    }
+
+    /**
+     * 构造操作按钮的广播 PendingIntent。
+     *
+     * 注意：PendingIntent 的「相等」只看 requestCode + action/data/type/class/categories，
+     * **不看 extras**。所以必须用 data 里的 [identity] 把不同课程的按钮区分开，
+     * 否则同一时刻的多门课会共用同一个 PendingIntent，点击时串数据。
+     */
+    private fun actionIntent(
+        context: Context,
+        action: String,
+        identity: String,
+        extras: (Intent) -> Unit
+    ): PendingIntent {
+        val intent = Intent(context, ReminderReceiver::class.java)
+        intent.action = action
+        intent.data = Uri.parse("$ACTION_DATA_PREFIX/$action/$identity")
+        extras(intent)
+        return PendingIntent.getBroadcast(context, identity.hashCode(), intent, PENDING_INTENT_FLAGS)
+    }
+
+    /**
+     * 统一的发送出口：再自检一次权限，并吞掉极端情况下的异常。
+     *
+     * 已由 [canPost]（areNotificationsEnabled）前置守卫；这里抑制 Lint 的 MissingPermission
+     * 误报 —— Lint 不总能识别自定义的守卫函数。
+     */
+    @SuppressLint("MissingPermission")
+    private fun post(context: Context, notificationId: Int, notification: Notification) {
+        if (!canPost(context)) return
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+        } catch (t: Throwable) {
+            // 权限在发送瞬间被撤销、通知服务被系统限制等情况：静默失败，绝不崩溃
+        }
+    }
+
+    /**
+     * 填充总览通知的自定义布局。
+     *
+     * RemoteViews 支持的方法有限，这里只用 setTextViewText；
+     * 收起态用单行「一 3 节」，展开态用契约示例的两行「一\n3 节」。
+     */
+    private fun timetableRemoteViews(
+        context: Context,
+        title: String,
+        subtitle: String,
+        weekdayCounts: List<Int>,
+        twoLineCells: Boolean
+    ): RemoteViews {
+        val views = RemoteViews(context.packageName, R.layout.notification_timetable)
+        views.setTextViewText(R.id.nt_title, title)
+        views.setTextViewText(R.id.nt_subtitle, subtitle)
+
+        // 布局里 title/subtitle 的文字颜色是按浅色底硬编码的深色。夜间模式下系统通知底色是深色，
+        // 深字会几乎不可见，因此这两行在夜间改成浅色；星期格子自带浅色底，保持深字即可。
+        if (isNightMode(context)) {
+            views.setTextColor(R.id.nt_title, COLOR_NIGHT_TITLE)
+            views.setTextColor(R.id.nt_subtitle, COLOR_NIGHT_SUBTITLE)
+        }
+
+        val dayIds = intArrayOf(
+            R.id.nt_day1,
+            R.id.nt_day2,
+            R.id.nt_day3,
+            R.id.nt_day4,
+            R.id.nt_day5
+        )
+        val dayLabels = arrayOf("一", "二", "三", "四", "五")
+        for (index in dayIds.indices) {
+            val count = weekdayCounts.getOrNull(index) ?: 0
+            val amount = if (count > 0) "$count 节" else "—"
+            val text = if (twoLineCells) {
+                "${dayLabels[index]}\n$amount"
+            } else {
+                "${dayLabels[index]} $amount"
             }
+            views.setTextViewText(dayIds[index], text)
         }
+        return views
+    }
 
-        /** 点击通知体：打开应用（所有通知共用同一个 PendingIntent） */
-        private fun openAppIntent(context: Context): PendingIntent {
-            val intent = Intent(context, MainActivity::class.java)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            return PendingIntent.getActivity(context, REQUEST_CODE_OPEN_APP, intent, PENDING_INTENT_FLAGS)
+    /** 当前是否处于系统深色模式（用于给自定义布局里没有背景色的两行文字选颜色） */
+    private fun isNightMode(context: Context): Boolean {
+        val mode = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        return mode == Configuration.UI_MODE_NIGHT_YES
+    }
+
+    /**
+     * 副标题：优先给「当前」——今天第一个尚未结束的时段（正在上或马上要上）；
+     * 今天没课则给明天的第一节；两天都没课则如实说明。
+     */
+    private fun buildSubtitle(
+        sessions: List<SessionEntity>,
+        nameById: Map<Long, CourseEntity>,
+        termStart: LocalDate,
+        zone: ZoneId
+    ): String {
+        val today = LocalDate.now(zone)
+        val todaySessions = sessionsOfDay(sessions, today, termStart)
+        if (todaySessions.isNotEmpty()) {
+            val now = LocalTime.now(zone)
+            // 「当前」= 今天第一个尚未结束的时段（正在上或马上要上）
+            val upcoming = todaySessions.firstOrNull { SectionTimes.endOf(it.endSection) > now }
+            if (upcoming != null) return "当前：" + describe(upcoming, nameById)
+            // 今天的课都上完了，就不再谎称「当前」，改为提示明天第一节
+            val first = sessionsOfDay(sessions, today.plusDays(1), termStart).firstOrNull()
+                ?: return "今天的课已结束"
+            return "今天已结束 · 明天：" + describe(first, nameById)
         }
+        val tomorrowSessions = sessionsOfDay(sessions, today.plusDays(1), termStart)
+        val first = tomorrowSessions.firstOrNull() ?: return "今天与明天都没有课"
+        return "明天：" + describe(first, nameById)
+    }
 
-        /**
-         * 构造操作按钮的广播 PendingIntent。
-         *
-         * 注意：PendingIntent 的「相等」只看 requestCode + action/data/type/class/categories，
-         * **不看 extras**。所以必须用 data 里的 [identity] 把不同课程的按钮区分开，
-         * 否则同一时刻的多门课会共用同一个 PendingIntent，点击时串数据。
-         */
-        private fun actionIntent(
-            context: Context,
-            action: String,
-            identity: String,
-            extras: (Intent) -> Unit
-        ): PendingIntent {
-            val intent = Intent(context, ReminderReceiver::class.java)
-            intent.action = action
-            intent.data = Uri.parse("$ACTION_DATA_PREFIX/$action/$identity")
-            extras(intent)
-            return PendingIntent.getBroadcast(context, identity.hashCode(), intent, PENDING_INTENT_FLAGS)
-        }
-
-        /**
-         * 统一的发送出口：再自检一次权限，并吞掉极端情况下的异常。
-         *
-         * 已由 [canPost]（areNotificationsEnabled）前置守卫；这里抑制 Lint 的 MissingPermission
-         * 误报 —— Lint 不总能识别自定义的守卫函数。
-         */
-        @SuppressLint("MissingPermission")
-        private fun post(context: Context, notificationId: Int, notification: Notification) {
-            if (!canPost(context)) return
-            try {
-                NotificationManagerCompat.from(context).notify(notificationId, notification)
-            } catch (t: Throwable) {
-                // 权限在发送瞬间被撤销、通知服务被系统限制等情况：静默失败，绝不崩溃
+    /** 取某个日期在对应教学周内、按开始节次升序排列的时段 */
+    private fun sessionsOfDay(
+        sessions: List<SessionEntity>,
+        date: LocalDate,
+        termStart: LocalDate
+    ): List<SessionEntity> {
+        val week = NotifyPrefs.weekOf(termStart, date)
+        if (week < 1 || week > WeekPatterns.MAX_WEEKS) return emptyList()
+        return sessions
+            .filter {
+                it.dayOfWeek == date.dayOfWeek.value &&
+                    WeekPatterns.contains(it.weekPattern, week)
             }
-        }
+            .sortedBy { it.startSection }
+    }
 
-        /**
-         * 填充总览通知的自定义布局。
-         *
-         * RemoteViews 支持的方法有限，这里只用 setTextViewText；
-         * 收起态用单行「一 3 节」，展开态用契约示例的两行「一\n3 节」。
-         */
-        private fun timetableRemoteViews(
-            context: Context,
-            title: String,
-            subtitle: String,
-            weekdayCounts: List<Int>,
-            twoLineCells: Boolean
-        ): RemoteViews {
-            val views = RemoteViews(context.packageName, R.layout.notification_timetable)
-            views.setTextViewText(R.id.nt_title, title)
-            views.setTextViewText(R.id.nt_subtitle, subtitle)
-
-            // 布局里 title/subtitle 的文字颜色是按浅色底硬编码的深色。夜间模式下系统通知底色是深色，
-            // 深字会几乎不可见，因此这两行在夜间改成浅色；星期格子自带浅色底，保持深字即可。
-            if (isNightMode(context)) {
-                views.setTextColor(R.id.nt_title, COLOR_NIGHT_TITLE)
-                views.setTextColor(R.id.nt_subtitle, COLOR_NIGHT_SUBTITLE)
-            }
-
-            val dayIds = intArrayOf(
-                R.id.nt_day1,
-                R.id.nt_day2,
-                R.id.nt_day3,
-                R.id.nt_day4,
-                R.id.nt_day5
-            )
-            val dayLabels = arrayOf("一", "二", "三", "四", "五")
-            for (index in dayIds.indices) {
-                val count = weekdayCounts.getOrNull(index) ?: 0
-                val amount = if (count > 0) "$count 节" else "—"
-                val text = if (twoLineCells) {
-                    "${dayLabels[index]}\n$amount"
-                } else {
-                    "${dayLabels[index]} $amount"
-                }
-                views.setTextViewText(dayIds[index], text)
-            }
-            return views
-        }
-
-        /** 当前是否处于系统深色模式（用于给自定义布局里没有背景色的两行文字选颜色） */
-        private fun isNightMode(context: Context): Boolean {
-            val mode = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-            return mode == Configuration.UI_MODE_NIGHT_YES
-        }
-
-        /**
-         * 副标题：优先给「当前」——今天第一个尚未结束的时段（正在上或马上要上）；
-         * 今天没课则给明天的第一节；两天都没课则如实说明。
-         */
-        private fun buildSubtitle(
-            sessions: List<SessionEntity>,
-            nameById: Map<Long, CourseEntity>,
-            termStart: LocalDate,
-            zone: ZoneId
-        ): String {
-            val today = LocalDate.now(zone)
-            val todaySessions = sessionsOfDay(sessions, today, termStart)
-            if (todaySessions.isNotEmpty()) {
-                val now = LocalTime.now(zone)
-                // 「当前」= 今天第一个尚未结束的时段（正在上或马上要上）
-                val upcoming = todaySessions.firstOrNull { SectionTimes.endOf(it.endSection) > now }
-                if (upcoming != null) return "当前：" + describe(upcoming, nameById)
-                // 今天的课都上完了，就不再谎称「当前」，改为提示明天第一节
-                val first = sessionsOfDay(sessions, today.plusDays(1), termStart).firstOrNull()
-                    ?: return "今天的课已结束"
-                return "今天已结束 · 明天：" + describe(first, nameById)
-            }
-            val tomorrowSessions = sessionsOfDay(sessions, today.plusDays(1), termStart)
-            val first = tomorrowSessions.firstOrNull() ?: return "今天与明天都没有课"
-            return "明天：" + describe(first, nameById)
-        }
-
-        /** 取某个日期在对应教学周内、按开始节次升序排列的时段 */
-        private fun sessionsOfDay(
-            sessions: List<SessionEntity>,
-            date: LocalDate,
-            termStart: LocalDate
-        ): List<SessionEntity> {
-            val week = NotifyPrefs.weekOf(termStart, date)
-            if (week < 1 || week > WeekPatterns.MAX_WEEKS) return emptyList()
-            return sessions
-                .filter {
-                    it.dayOfWeek == date.dayOfWeek.value &&
-                        WeekPatterns.contains(it.weekPattern, week)
-                }
-                .sortedBy { it.startSection }
-        }
-
-        /** 「课程名 · 地点」；地点为空时只留课程名 */
-        private fun describe(session: SessionEntity, nameById: Map<Long, CourseEntity>): String {
-            val name = nameById[session.courseId]?.name ?: "未命名课程"
-            return if (session.location.isBlank()) name else "$name · ${session.location}"
-        }
+    /** 「课程名 · 地点」；地点为空时只留课程名 */
+    private fun describe(session: SessionEntity, nameById: Map<Long, CourseEntity>): String {
+        val name = nameById[session.courseId]?.name ?: "未命名课程"
+        return if (session.location.isBlank()) name else "$name · ${session.location}"
     }
 }
 

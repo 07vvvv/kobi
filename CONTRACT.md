@@ -627,3 +627,24 @@ UI 依赖此行为，实现方不得更改。
 `notification_timetable.xml` 的文字颜色通过 `@color/kobi_notif_title` / `@color/kobi_notif_subtitle` 引用，并在 `values-night/colors.xml` 中提供浅色值。
 
 星期格子底色**无法**跟随夜间模式——`View.setBackgroundColor` 没有 `@RemotableViewMethod`，RemoteViews 调用会抛 `ActionException`，故格子恒为浅底深字，属有意设计。
+
+### 8.17 `object` 内部不得声明 `companion object` ★
+
+Kotlin **不允许**在 standalone `object` 内部声明 `companion object`，会直接编译失败：
+
+```
+error: Modifier 'companion' is not applicable inside 'standalone object'
+```
+
+`object` 本身已是单例，成员直接声明在 object 顶层即可：
+
+```kotlin
+object Foo {
+    const val BAR: Int = 1     // ✅ 正确
+    // companion object { }    // ❌ 编译失败
+}
+```
+
+外部引用方式不变（仍是 `Foo.BAR`）。本项目已据此修正 `ReminderScheduler` 与 `Notifier`——两者的 `companion object` 包裹已移除，成员提升至 object 顶层。
+
+> 由 CI 首次编译发现（本机无 JDK，静态审查未能识别）。
