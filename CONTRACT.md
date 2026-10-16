@@ -885,7 +885,7 @@ PDF 这一条从选文件到入库的完整链路：
 **关于「表格线反向推定节次」（本轮新增的关键设计）**：
 
 - 真实教务课表 PDF 的表格网格是用 `m` / `l` 路径加 `S` 描边画出来的；**合并单元格中间的那条横线不会被画**，因此「某一列存在哪些行边界线」直接给出了每个格子的行跨度 —— 也就是课程的节次范围。
-- 为什么必须用它：一个格子只放四行元数据（课程名 / 课程号 / 学分教师 / 周次地点），这四行文字的总高常**超过一节课的行高**，单靠「拿块的纵向范围去套节次带」会把单节课普遍误判成连堂；而文字里不含节数信息，**表格线是节次数量的唯一精确来源**。
+- 为什么必须用它：一个格子只放四行元数据（课程名 / 课程号 / 学分教师 / 周次地点）。**实测真实教务课表 PDF（2026-10 抽样，横向 A4）：字号 11pt、格子内行距 14pt，四行之间三个间隔合计 42pt，整块含字身约 53pt；而节次行高只有约 30pt —— 一个格子的文字总高接近两节课。** 所以「拿块的纵向范围去套节次带」会把单节课普遍误判成连堂，而文字里不含节数信息，**表格线是节次数量的唯一精确来源**。（该组实测数字的出处见 `TimetableLayoutParser.kt` 中 `CellBand` 的 KDoc。）
 - 具体做法：竖直线去重排序得到列的左右边界；用星期表头文字的水平中心把列映射到星期几（表头缺失时按列序兜底）；最左列左侧的纯数字文本项（`1`~`12`）给出各节次位置；水平线给出**每一列各自**的行边界，相邻两条边界围成一个格子行带。
 - 产物是 `TimetableLayoutParser.CellBand(weekday, top, bottom, startSection, endSection)`，经 `parse(lines, cellBands)` 传入重建器。
 - **拿不到线段时自动退化**为纯文字推断路径（`cellBands` 为空即走原逻辑），行为与既有版本一致。
@@ -970,13 +970,15 @@ PDF 的 pt 坐标乘 1.5 后取整再进布局重建器，用来对齐 `Timetabl
 点击课程块弹出详情面板，完整展示课程名 / 教师 / 地点 / 星期 / 节次 / 周次，并可从中进入编辑页（原「点击直接跳编辑页」的能力仍然可达，只是多了一层确认）。
 
 **约束 6：节次判定的首选依据是表格格子行带，退化路径必须保留且不得静默误判。**
-当 `cellBands` 非空时，`sectionRange` **必须优先**按格子行带定节次，判据固定为「**区间包含**」，不是「最近邻」：
-1. 锚点取块的**首行文本的垂直中心**（`block.first().centerY`），不是块整体的纵向中心 —— 一个格子的四行元数据总高常超过一节课的行高，文字向下溢出会把块整体中心带偏，首行中心才落在课程实际开始的那一带里；
-2. 在 `weekday` 相同的行带中取满足 `anchor >= top && anchor < bottom` 的那一条，即**半开区间 `[top, bottom)` 包含**；用半开是为了让恰好压在相邻两带交界上的块只归属下面那条带，否则节次会整体上移一节；
-3. 命中即返回 `startSection` 与 `maxOf(startSection, endSection)`（保证 `endSection` 不小于 `startSection`）；未命中任何行带时**继续走退化路径**，不得直接返回兜底值。
+当 `cellBands` 非空时，`sectionRange` **必须优先**按格子行带定节次，判据固定为「**块顶对上边界求最近邻**」：
+1. 锚点取**块的顶边**，即块内所有行的最小 `top`（`block.minOfOrNull { it.top }`）—— 课表格子里的文字从格子左上角开始往下排，四行元数据的总高常超过格子高度并向下溢出，块心与首行中心都会被溢出带偏，只有块顶稳定贴着格顶；
+2. 在 `weekday` 相同的行带中取 `top` 与锚点**距离最近**的那一条（`filter { it.weekday == weekday }.minByOrNull { abs(it.top - anchor) }`）；
+3. 命中即返回 `startSection` 与 `maxOf(startSection, endSection)`（保证 `endSection` 不小于 `startSection`）；没有任何同星期行带时**继续走退化路径**，不得直接返回兜底值。
 `cellBands` 为空（解析器提不到描边线段）时，**必须**退化为原有的「按块纵向范围与节次带重叠、取重叠最大者」的推断路径（`sectionRows` 也为空时再退到 `1 to 1`），不得因为拿不到线段就放弃重建或返回空结果。
-**不得**改用「块整体中心落在哪个区间」或「块的顶边最接近哪条上边界」之类的近似判据替代上述写法：前者的锚点会被文字向下溢出带偏，后者是最近邻匹配、在相邻格子行高不等时会跨带误配，二者都会把单节课误判成连堂或让节次整体偏移。
-（补注：本条锚点与半开区间写法以代码现状为准，见 `TimetableLayoutParser.kt` 的 `sectionRange`。）
+**不得**改用下面两种近似判据替代上述写法：
+- 用**区间包含**（锚点落在 `[top, bottom)` 内）替代最近邻 —— 相邻格子行高不等时会跨带误配；
+- 用**块整体中心**（或首行中心）作锚点替代块顶 —— 会被文字向下溢出带偏。
+（补注：本条锚点与最近邻判据以代码现状为准，见 `TimetableLayoutParser.kt` 的 `sectionRange`。）
 
 ### 11.5 已知边界（界面必须给出明确提示，不得静默失败）★
 
@@ -988,6 +990,8 @@ PDF 的 pt 坐标乘 1.5 后取整再进布局重建器，用来对齐 `Timetabl
 
 ### 11.6 可验证性 ★
 
-- `app/src/test/java/com/xixi/timetable/data/layout/TimetableLayoutParserTest.kt` 覆盖布局重建。
+- `app/src/test/java/com/xixi/timetable/data/layout/TimetableLayoutParserTest.kt` 覆盖布局重建（含 `cellBands` 优先与退化两条路径）。
+- `app/src/test/java/com/xixi/timetable/data/pdf/PdfTextExtractorTest.kt` 覆盖 PDF 文本项与表格线段的提取。
+- `app/src/test/java/com/xixi/timetable/data/pdf/PdfTimetableImporterTest.kt` 覆盖聚行 / 切片段 / 坐标翻转。
 - `app/src/test/resources/timetable-fixture.pdf` 是**虚构**的课表 PDF fixture（不含任何真实学号与姓名），用于覆盖 PDF 解析端到端。
 - 验收方式：CI 的 `./gradlew testDebugUnitTest` 全绿；PDF 导入路径另需**真机人工核对**（选一份教务系统导出的课表 PDF，核对回填文本与入库结果）。

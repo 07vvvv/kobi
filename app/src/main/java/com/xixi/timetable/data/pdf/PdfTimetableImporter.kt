@@ -366,8 +366,10 @@ object PdfTimetableImporter {
                         weekday = weekdays[index],
                         top = top,
                         bottom = bottom,
-                        startSection = sections.min(),
-                        endSection = sections.max()
+                        // 上面已保证 sections 非空，兜底值不会真正生效；
+                        // 用 minOrNull/maxOrNull 而不是 min()/max()：后者返回可空类型且已被废弃。
+                        startSection = sections.minOrNull() ?: 1,
+                        endSection = sections.maxOrNull() ?: 1
                     )
                 )
             }

@@ -157,8 +157,10 @@ kobi/
 │   └── notify/                  提醒层：闹钟调度、通知样式、开机重排、权限自检
 ├── app/src/test/
 │   ├── java/com/xixi/timetable/  JVM 单元测试（CI 执行 testDebugUnitTest）
+│   │   ├── data/importer/TextImporterTest.kt          粘贴文本解析
 │   │   ├── data/layout/TimetableLayoutParserTest.kt   布局重建
-│   │   └── data/importer/TextImporterTest.kt          粘贴文本解析
+│   │   ├── data/pdf/PdfTextExtractorTest.kt           PDF 文本项与表格线段提取
+│   │   └── data/pdf/PdfTimetableImporterTest.kt       PDF 聚行 / 切片段 / 坐标翻转
 │   └── resources/timetable-fixture.pdf   虚构的课表 PDF 测试夹具（不含真实学号姓名）
 └── .github/workflows/build-apk.yml
 ```
