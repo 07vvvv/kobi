@@ -56,8 +56,25 @@ object PdfTimetableImporter {
      */
     private const val COORDINATE_SCALE = 1.5f
 
-    /** 两条文本项基线纵坐标之差在「字号 × 该系数」以内视为同一行 */
-    private const val SAME_LINE_TOLERANCE = 0.35f
+    /**
+     * 两条文本项基线纵坐标之差在「字号 × 该系数」以内视为同一行。
+     *
+     * 取 0.12 而不是 0.35：逐字定位的 PDF 里**同一行每个字的基线完全相同**，容差只需覆盖
+     * 浮点误差；而真实课表的格子内相邻两行（课程名行与课程号行）可能只差 2pt
+     * （实测 `★计量经济学` y=266 / `/(202620271)08420000.05/宋` y=264，字号 10 与 8）。
+     * 容差一大这两行就会被并成一行，按 x 排序后拼出 `/(2026★20计271量)08经42济000学0.05/宋`
+     * 这种字符级乱码 —— 课程名与地点全部报废。
+     */
+    private const val SAME_LINE_TOLERANCE = 0.12f
+
+    /**
+     * 剔除页眉 / 页脚整行时用于聚行的容差（pt）。
+     *
+     * 必须小于真实网格行距的最小值：实测页脚备注行（y=22）与它上面一行课程内容（y=23）
+     * 只差 1pt，容差取 1 会把两者并成一行，关键词命中后**连课程内容一起删掉**
+     * （实测「形势与政策」由此丢了整行）。
+     */
+    private const val NOISE_ROW_TOLERANCE = 0.5f
 
     /**
      * 同一行内相邻两项的水平间隙超过「字号 × 该系数」就切成两个独立片段。
@@ -176,14 +193,82 @@ object PdfTimetableImporter {
     /**
      * 把一页 PDF 的文本项还原成一行行带坐标的定位文本。
      *
-     * 两步：
-     * 1. **按基线聚行** —— 逐字定位的 PDF 里每个字都是一条独立文本项，同一行文字的基线
-     *    纵坐标相同（或相差极小），按「字号 × [SAME_LINE_TOLERANCE]」的容差聚成一行；
-     * 2. **按水平间隙切片段** —— 同一行里可能横跨多个表格列，列与列之间有明显间隙，
-     *    间隙超过「字号 × [SEGMENT_GAP_FACTOR]」就切开，保证一个片段只属于一个格子。
+     * **先按表格列切开，再在每一列内部聚行**。这一步是必需的：教务课表 PDF 里每个字都是
+     * 独立文本项，而一个格子里的长字段（课程号 `/(202620271)08420000.05/宋` 有 21 个字符、
+     * 字号 8pt 时宽约 88pt）几乎铺满整列宽（实测列宽 106pt）；同一视觉行上相邻两个格子的
+     * 文字因此在 x 上互相穿插。若先全页聚行、再按 x 排序拼接（旧口径），就会得到
+     * `/(2026★20计271量)08经42济000学0.05/宋` 这种字符级乱码 —— 这不是个别格子，
+     * 而是所有「长字段行 + 邻格同行有字」的位置都会中招。
+     *
+     * 按列切开后，同一行里只会剩下同一个格子的文字，拼接自然正确。
+     * 列边界取自表格竖线，因此对没有竖线的 PDF 会自动退化成整页处理（见 [columnRanges]）。
      */
     private fun toPositionedText(page: PdfPageText, observedTop: Float): List<PositionedText> {
-        val items = page.items.filter { it.text.isNotBlank() }
+        // 0) 先整行剔除页眉页脚：这些行横跨多个星期列，按列切开会只剩碎片、关键词不再完整。
+        val items = dropNoiseRows(page.items.filter { it.text.isNotBlank() })
+        if (items.isEmpty()) return emptyList()
+
+        val ranges = columnRanges(page)
+        if (ranges.isEmpty()) return reconstructRows(items, observedTop)
+
+        // 列外（最左的节次列、页眉页脚、表格右侧之外）的文本项单独成组：节次标签与星期表头
+        // 都在列外，它们是网格定位的依据，必须原样保留。
+        val outside = ArrayList<PdfTextItem>()
+        val inside = MutableList(ranges.size) { mutableListOf<PdfTextItem>() }
+        for (item in items) {
+            val index = ranges.indexOfFirst { item.x >= it[0] && item.x < it[1] }
+            if (index >= 0) inside[index].add(item) else outside.add(item)
+        }
+
+        val result = ArrayList<PositionedText>()
+        result.addAll(reconstructRows(outside, observedTop))
+        for (group in inside) {
+            if (group.isNotEmpty()) result.addAll(reconstructRows(group, observedTop))
+        }
+        return result
+    }
+
+    /**
+     * 整行丢弃命中页眉 / 页脚关键词的文本项。
+     *
+     * **必须在按列切分之前做**：这些行（学期标题、学号姓名班级总学分、页脚的「公选课程」清单）
+     * 横跨多个星期列，按列切开后只剩碎片（实测备注行被切成 `[网` 与 `络课]【吴立立（4-15）】`），
+     * 关键词不再完整，下游再也认不出来，碎片会被当成课程名或地点入库。
+     * 关键词表与 [TimetableLayoutParser.isNoiseText] 共用一份，不复制副本。
+     */
+    private fun dropNoiseRows(items: List<PdfTextItem>): List<PdfTextItem> {
+        if (items.isEmpty()) return items
+        val sorted = items.sortedByDescending { it.y }
+        val kept = ArrayList<PdfTextItem>(items.size)
+        var row = ArrayList<PdfTextItem>()
+        var rowY = Float.NaN
+
+        fun flush() {
+            if (row.isEmpty()) return
+            val text = row.sortedBy { it.x }.joinToString("") { it.text }
+            if (!TimetableLayoutParser.isNoiseText(text)) kept.addAll(row)
+            row = ArrayList()
+        }
+
+        for (item in sorted) {
+            if (row.isNotEmpty() && abs(item.y - rowY) > NOISE_ROW_TOLERANCE) flush()
+            if (row.isEmpty()) rowY = item.y
+            row.add(item)
+        }
+        flush()
+        return kept
+    }
+
+    /**
+     * 把一组（某一表格列内、或所有列外）的文本项还原成一行行带坐标的定位文本。
+     *
+     * 两步：
+     * 1. **按基线聚行** —— 逐字定位的 PDF 里同一行文字的基线完全相同，按「字号 ×
+     *    [SAME_LINE_TOLERANCE]」的容差聚成一行；
+     * 2. **按水平间隙切片段** —— 同一行里可能还有多个要素（课程名 / 课程号 / 教师），
+     *    其间的间隙远大于字间距，间隙超过「字号 × [SEGMENT_GAP_FACTOR]」就切开。
+     */
+    private fun reconstructRows(items: List<PdfTextItem>, observedTop: Float): List<PositionedText> {
         if (items.isEmpty()) return emptyList()
 
         // 1) 按基线 y 聚行。items 按 y 降序（PDF 里 y 越大越靠上），同行的项自然相邻。
@@ -343,8 +428,10 @@ object PdfTimetableImporter {
             val right = columns[index][1]
             val raw = ArrayList<Int>()
             for (line in horizontals) {
-                val middle = (line.left + line.right) / 2
-                if (middle in left..right) raw.add(line.y)
+                // 判据是「线段与本列有交集」，不是「线段中点落在本列」：
+                // 一条横线常常横跨整行，中点只会落在中间那一列，其余列的行边界会全部丢失，
+                // 于是那些列的格子会被并成一个高带，节次范围随之被撑大。
+                if (line.right > left && line.left < right) raw.add(line.y)
             }
             raw.sort()
 
@@ -391,6 +478,28 @@ object PdfTimetableImporter {
             if (merged.isEmpty() || x - merged.last() > LINE_MERGE_TOLERANCE) merged.add(x)
         }
         return merged
+    }
+
+    /**
+     * 表格的列区间（PDF 用户空间 x 坐标，左闭右开），只保留宽度达到 [MIN_COLUMN_WIDTH] 的列。
+     *
+     * 宽度门槛把最左侧的节次列（实测 40pt，×1.5 = 60）与页面外框挡在外面；
+     * 拿不到竖线时返回空列表，[toPositionedText] 据此退化成整页处理。
+     */
+    private fun columnRanges(page: PdfPageText): List<FloatArray> {
+        val boundaries = verticalBoundaries(page)
+        if (boundaries.size < 2) return emptyList()
+        val result = ArrayList<FloatArray>()
+        for (index in 0 until boundaries.size - 1) {
+            if (boundaries[index + 1] - boundaries[index] < MIN_COLUMN_WIDTH) continue
+            result.add(
+                floatArrayOf(
+                    boundaries[index] / COORDINATE_SCALE,
+                    boundaries[index + 1] / COORDINATE_SCALE
+                )
+            )
+        }
+        return result
     }
 
     /** 水平网格线（内部坐标） */

@@ -57,7 +57,8 @@
 - **只支持矢量文本 PDF**（教务系统打印 / 导出的那种，字符是真正的文本对象）；
 - **扫描件、图片版 PDF 读不出来** —— 里面没有可提取的文字，应用会明确提示，不会静默失败；
 - 加密 PDF 等不支持的文件，会给出可读的错误提示；
-- 版面特别复杂（多栏、表格线异常）的 PDF，重建可能出错 —— 典型表现是课程名 / 教师 / 地点错位，在文本框里改一下即可，星期与节次通常仍是对的；
+- **同一个格子里有多门课**、且 PDF 把这几门课的文字画在完全相同的位置时，这几门课的字段会混在一起 —— 这类格子只能在文本框里手工拆分，应用无法自动还原（原因见 `CONTRACT.md` 11.7）；
+- 其它版面异常（多栏、表格线异常）的 PDF，重建可能出错 —— 典型表现是课程名 / 教师 / 地点错位，在文本框里改一下即可，星期与节次通常仍是对的；
 - **选中哪一门课永远由你核对**，解析结果不会跳过确认直接入库。
 
 关于合并规则：导入时**同名同教师**的记录会合并为**一门课程**（多个时段挂在同一门课下），重复的时段会自动去重。所以重复导入同一份课表不会产生重复数据。
@@ -160,8 +161,11 @@ kobi/
 │   │   ├── data/importer/TextImporterTest.kt          粘贴文本解析
 │   │   ├── data/layout/TimetableLayoutParserTest.kt   布局重建
 │   │   ├── data/pdf/PdfTextExtractorTest.kt           PDF 文本项与表格线段提取
-│   │   └── data/pdf/PdfTimetableImporterTest.kt       PDF 聚行 / 切片段 / 坐标翻转
-│   └── resources/timetable-fixture.pdf   虚构的课表 PDF 测试夹具（不含真实学号姓名）
+│   │   ├── data/pdf/PdfTimetableImporterTest.kt       PDF 聚行 / 切片段 / 坐标翻转
+│   │   └── data/pdf/PdfCompactFixtureTest.kt          紧凑排版：长课程号 / 跨行课名 / 同格两门课
+│   └── resources/
+│       ├── timetable-fixture.pdf          虚构的课表 PDF 测试夹具（不含真实学号姓名）
+│       └── timetable-compact-fixture.pdf  紧凑排版夹具（同上，由 tools/make-test-pdf.py 生成）
 └── .github/workflows/build-apk.yml
 ```
 

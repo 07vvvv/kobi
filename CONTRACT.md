@@ -993,5 +993,33 @@ PDF 的 pt 坐标乘 1.5 后取整再进布局重建器，用来对齐 `Timetabl
 - `app/src/test/java/com/xixi/timetable/data/layout/TimetableLayoutParserTest.kt` 覆盖布局重建（含 `cellBands` 优先与退化两条路径）。
 - `app/src/test/java/com/xixi/timetable/data/pdf/PdfTextExtractorTest.kt` 覆盖 PDF 文本项与表格线段的提取。
 - `app/src/test/java/com/xixi/timetable/data/pdf/PdfTimetableImporterTest.kt` 覆盖聚行 / 切片段 / 坐标翻转。
-- `app/src/test/resources/timetable-fixture.pdf` 是**虚构**的课表 PDF fixture（不含任何真实学号与姓名），用于覆盖 PDF 解析端到端。
+- `app/src/test/java/com/xixi/timetable/data/pdf/PdfCompactFixtureTest.kt` 覆盖**紧凑排版**（8~10pt 小字号、21 字符长课程号、跨行课程名、同格两门课、页脚备注行）—— 即 11.7 修复的那批结构。
+- `app/src/test/resources/timetable-fixture.pdf` 与 `timetable-compact-fixture.pdf` 都是**虚构**的课表 PDF fixture（不含任何真实学号与姓名），由 `tools/make-test-pdf.py` 生成，覆盖 PDF 解析端到端。
 - 验收方式：CI 的 `./gradlew testDebugUnitTest` 全绿；PDF 导入路径另需**真机人工核对**（选一份教务系统导出的课表 PDF，核对回填文本与入库结果）。
+
+### 11.7 第二轮修复：按表格列重组（2026-10-17）★
+
+第一轮实现（11.3）是**全页聚行**：把所有文本项按基线 y 聚行、行内按 x 排序拼成文字。它在真实
+教务课表 PDF 上大面积产出字符级乱码（实测 `/(2026★20计271量)08经42济000学0.05/宋`），
+课程名与地点同时报废。根因是版面本身的两个事实：
+
+1. **逐字定位**：每个字是一条独立文本项（实测 2185 项 / 页）；
+2. **长字段铺满列宽**：课程号 `/(202620271)08420000.05` 有 21 个字符，8pt 字号下宽约 88pt，
+   而星期列宽只有 106pt。同一视觉行上，相邻两个格子的文字因此在 x 上互相穿插 ——
+   实测同一 y（305.00）、同一字号下，两个字符串的字符 **x 完全相同**（`x=424` 上同时有
+   `0` 与 `0`，`x=434` 上同时有 `7` 与 `/`）。
+
+修复五条：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `PdfTimetableImporter.toPositionedText` | **先按表格竖线切成列，再在列内聚行**（新增 `columnRanges`）。同一行里只剩同一个格子的文字，拼接自然正确；拿不到竖线时自动退化为整页处理 |
+| 2 | `SAME_LINE_TOLERANCE` | 0.35 × 字号 → **0.12 × 字号**。同一行的字基线完全相同，容差只需覆盖浮点误差；而格子内相邻两行可能只差 2pt（实测 `★计量经济学` y=266 / 代码 y=264），容差一大就被并成一行 |
+| 3 | `PdfTimetableImporter.dropNoiseRows` | **按列切分之前**先整行剔除页眉页脚。备注行横跨两个星期列，切开后只剩碎片（`[网` / `络课]【吴立立（4-15）】`），关键词不再完整、下游认不出来。聚行容差取 0.5pt：实测备注行（y=22）与它上面一行课程内容（y=23）只差 1pt，容差取 1 会把课程内容一起删掉 |
+| 4 | `TimetableLayoutParser.isBlockTailContinuation` / `isNameContinuation` | 区分「课内字段行」与「课程名行」。含 `/` 且**以数字开头**的行（`05/卢亭薇`）是课内行；**以汉字开头**的（`★` 丢失时的 `体育 / 詹老师 /`）是课程名行，不得并进上一块。课名续行（`验` / `学` / `线教学`）的判据是**不含 `/`**、无块首符号、无周次、非强编号 |
+| 5 | `TimetableLayoutParser.firstSegmentAfterPunctuation` / `repairOverflowedWeekLines` | 地点首段被换行拆开时与下一段拼接（`…,在` + `线教学` → `在线教学`）；格子装不下时，上一格的周次行会落到下一格 `★` 行下方，把**前两行内**的 `/<周次>` 行归还给上一块 |
+
+**仍然存在的边界（不得声称已解决）**：同一个格子里有多门课时，如果 PDF 生成器把它们的文字画在
+**完全相同的位置**（实测周三第 7-8 节的 `★财务管理` 与 `★计量经济学`），这些文字在几何上不可分，
+任何按坐标重组的实现都无法还原，只能得到字段混合的结果。**实测一份真实教务课表 PDF**：
+重建出 40 条，其中 33 条完全正确，7 条受此影响（受影响的格子约占 1/6）。

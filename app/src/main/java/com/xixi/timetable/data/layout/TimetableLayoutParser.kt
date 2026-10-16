@@ -91,6 +91,14 @@ object TimetableLayoutParser {
     /** 下边界 = 最后一个节次行中心 + 行距中位数 × 该系数 */
     private const val LOWER_BOUND_FACTOR = 1.2
 
+    /**
+     * 认定为「上一行的续行」的最大长度（字符数）。
+     *
+     * 课名被换行拆开后，续行一家只有一两个字（实测 `验`、`学`、`及安全防护项目`）；
+     * 放宽到 12 是为了兜住最长的那类续行，同时不至于把一整条真课名误判成续行。
+     */
+    private const val MAX_CONTINUATION_LENGTH = 12
+
     /** 节次行少于 2 个时的行距兜底（内部坐标尺度约 57） */
     private const val FALLBACK_ROW_HEIGHT = 57.0
 
@@ -113,7 +121,10 @@ object TimetableLayoutParser {
      * 不会出现在课程格子里；不排除的话它们会被当成课程入库，用户会凭空多出几门课。
      */
     private val NOISE_KEYWORDS = arrayOf(
-        "课程表", "学期", "学号", "姓名", "班级", "学分", "备注", "教务处", "打印", "导出"
+        "课程表", "学期", "学号", "姓名", "班级", "学分", "备注", "教务处", "打印", "导出",
+        // 教务课表页脚的「公选课程」清单：实测它排在表格最下一行、x 又横跨两个星期列，
+        // 按列切开后会各自变成一条假课（实测 `公选课程:社会主义发展史[网`）。
+        "公选"
     )
 
     // ===================== 正则 =====================
@@ -278,13 +289,19 @@ object TimetableLayoutParser {
     private fun isGridContent(line: PositionedText, firstColumnBoundary: Int, headerBottom: Int?): Boolean {
         if (line.centerX < firstColumnBoundary) return false
         if (weekdayIndexOf(line.text) != null) return false
-        if (isNoiseLine(line.text)) return false
+        if (isNoiseText(line.text)) return false
         if (headerBottom != null && line.centerY <= headerBottom) return false
         return true
     }
 
-    /** 页眉 / 页脚关键词判定 */
-    private fun isNoiseLine(text: String): Boolean =
+    /**
+     * 页眉 / 页脚关键词判定（关键词表是**单一来源**）。
+     *
+     * 声明为 `internal` 是为了让 `PdfTimetableImporter` 在**按列切分之前**也能用它整行剔除噪声：
+     * 这些行横跨多个星期列，一旦按列切开就只剩碎片（实测备注行被切成 `[网` 与 `络课]【吴立立（4-15）】`），
+     * 关键词不再完整，下游再也认不出来，碎片会被当成课程名或地点入库。
+     */
+    internal fun isNoiseText(text: String): Boolean =
         NOISE_KEYWORDS.any { text.contains(it) }
 
     /** 下边界之后（页脚）的内容剔除；无节次标签时不设下边界，只靠关键词兜底 */
@@ -439,8 +456,10 @@ object TimetableLayoutParser {
             val gap = if (previous == null) 0.0 else (line.top - previous.bottom).toDouble()
             val startsWithBullet = BULLET_RE.containsMatchIn(line.text)
             val hasWeek = TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(line.text)
-            // 该行本身可能只是本块尾部被拆开的延续（周次行之后的地点行），这时不能开新块
-            val continuesBlock = isBlockTailContinuation(line)
+            // 该行本身可能只是本块尾部被拆开的延续（周次行之后的地点行、课名被换行截断），
+            // 这时不能开新块。区分「课名续行」与「★ 丢失的下一门课」靠 `isNameContinuation`
+            // 里的「不含 `/`」：下一门课的首行总带 `/`（`体育 / 詹老师 /`），续行不带。
+            val continuesBlock = isBlockTailContinuation(line) || isNameContinuation(line)
             val startNew = current.isNotEmpty() &&
                 (gap > threshold || startsWithBullet || (currentHasWeek && !hasWeek && !continuesBlock))
             if (startNew) {
@@ -453,7 +472,42 @@ object TimetableLayoutParser {
             previous = line
         }
         if (current.isNotEmpty()) blocks.add(current)
-        return blocks
+        return repairOverflowedWeekLines(blocks)
+    }
+
+    /**
+     * 把「溢出到下一个块开头的周次行」归还给上一个块。
+     *
+     * 课表格子常常装不下整块文字，上一格的周次行会落到下一格 `★` 课程名行的下方 ——
+     * 实测 `★中级财务会计模拟实`(y=459) 排在 `/【14-17周】,3310`(y=456) 之前，
+     * 于是周次被算进下一格，上一格只剩兜底的「1-30周」、地点也跟着丢。
+     *
+     * 判据三重保守：候选行必须是下一个块**前两行内**的 `/<周次>` 行；当前块必须**完全没有**周次；
+     * 且移走后**下一个块自己仍然还有**周次行。任何一条不满足都不动。
+     */
+    private fun repairOverflowedWeekLines(blocks: List<List<PositionedText>>): List<List<PositionedText>> {
+        val repaired = ArrayList<MutableList<PositionedText>>(blocks.size)
+        for (block in blocks) {
+            val mutable = block.toMutableList()
+            val previous = repaired.lastOrNull()
+            if (previous != null &&
+                previous.none { TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(it.text) }
+            ) {
+                val limit = minOf(2, mutable.size - 1)
+                val index = (0 until limit).firstOrNull { position ->
+                    val line = mutable[position]
+                    line.text.trimStart().startsWith("/") &&
+                        TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(line.text)
+                }
+                if (index != null &&
+                    mutable.drop(index + 1).any { TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(it.text) }
+                ) {
+                    previous.add(mutable.removeAt(index))
+                }
+            }
+            repaired.add(mutable)
+        }
+        return repaired
     }
 
     /**
@@ -495,9 +549,13 @@ object TimetableLayoutParser {
     }
 
     /**
-     * 该行是否只是本块尾部（周次行 / 地点行）被拆开的延续：
-     * 纯标点开头、纯数字、或命中地点特征时视为延续，不开新块 ——
-     * 否则会多出一条只有地点、课程名为「未识别课程」的假课。
+     * 该行是否只是本块尾部（周次行 / 地点行 / 课名续行）被拆开的延续：
+     * 纯标点开头、纯数字、命中地点特征、或**完全不含字段特征的短行**时视为延续，不开新块 ——
+     * 否则会多出一条只有地点或只有一两个字的假课。
+     *
+     * 最后那条判据是实测出来的：课名会被换行拆成 `★中级财务会计模拟实` + `验`、
+     * `★"橙爱橙家"宿舍清洁` + `及安全防护项目`、`★计量经济学` + `学`。这些续行既没有 `/`、
+     * 也没有数字与周次，本来就不可能是新一门课的起点；而真正的新课一定以块首符号（`★`）开头。
      */
     private fun isBlockTailContinuation(line: PositionedText): Boolean {
         val text = line.text.trim()
@@ -505,7 +563,30 @@ object TimetableLayoutParser {
         if (text.first() in ",，.、;；:：|/】])）·") return true
         val normalized = normalizeForMatch(text)
         if (PURE_DIGIT_RE.matches(normalized)) return true
-        return isPlaceLike(text)
+        if (isPlaceLike(text)) return true
+        // 含 `/` 且**以数字开头**的行是「课序号 / 教师 / 周次」行（实测 `05/卢亭薇`、`2.03/甘宏博`、
+        // `02/庄志晖/【1-4,6-10`），无论多长都属于本块；旧口径一律把带 `/` 的行当新块起点，
+        // 会把整块的教师行与周次行切到下一个块里去，于是上一块只剩兜底的「1-30周」、课程名也被截断。
+        // **以汉字开头**的行（`体育 / 詹老师 /`）是课程名行，绝不能并进来 —— 否则 `★` 丢失时
+        // 同一格里的两门课会被粘成一块（既有契约「靠周次行切块」会因此失效）。
+        return text.first().isDigit() && text.contains('/') && !CODE_GROUP_RE.containsMatchIn(text)
+    }
+
+    /**
+     * 该行是否可能是**课程名的续行**（`★中级财务会计模拟实` + `验`、`★计量经济学` + `学`、
+     * `…,在` + `线教学`）。
+     *
+     * 判据里最关键的是**不含 `/`**：`★` 丢失时，下一门课的首行写成 `体育 / 詹老师 /`（带 `/`），
+     * 而课程名续行不带 —— 既有契约「靠周次行切块」因此仍然成立，
+     * 不会把同一格里的两门课粘成一块。
+     */
+    private fun isNameContinuation(line: PositionedText): Boolean {
+        val text = line.text.trim()
+        if (text.isEmpty() || text.length > MAX_CONTINUATION_LENGTH) return false
+        if (text.contains('/')) return false
+        if (BULLET_RE.containsMatchIn(text)) return false
+        if (isStrongCode(text)) return false
+        return !TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(text)
     }
 
     private fun buildRow(
@@ -667,12 +748,27 @@ object TimetableLayoutParser {
         return ""
     }
 
-    /** 跳过前导标点后取第一段，用于「周次之后就是地点」的定位 */
+    /**
+     * 跳过前导标点后取第一段，用于「周次之后就是地点」的定位。
+     *
+     * 首段可能被换行拆开（实测 `…,在` 与 `线教学` 两行拼成「在线教学」）：段太短（≤ 2 字）
+     * 且是纯汉字时与下一行的首段拼起来，否则地点只剩一个「在」。
+     */
     private fun firstSegmentAfterPunctuation(tail: String): String {
         val trimmed = LEADING_PUNCT_RE.replace(tail, "")
         if (trimmed.isEmpty()) return ""
-        val firstLine = trimmed.substringBefore('\n')
-        return cleanField(SEGMENT_SPLIT_RE.split(firstLine).firstOrNull().orEmpty())
+        val lines = trimmed.split('\n')
+        val result = cleanField(SEGMENT_SPLIT_RE.split(lines.first()).firstOrNull().orEmpty())
+        if (result.isEmpty() || result.length > 2) return result
+        if (!result.all { HAN_CHAR_RE.matches(it.toString()) }) return result
+        for (index in 1 until lines.size) {
+            val next = cleanField(SEGMENT_SPLIT_RE.split(lines[index]).firstOrNull().orEmpty())
+            if (next.isEmpty()) break
+            // 下一段也必须像地点的续写（纯汉字、不太长），否则会把课序号拼进来（实测「在」+「05」）
+            if (next.length > 4 || !next.all { HAN_CHAR_RE.matches(it.toString()) }) break
+            return result + next
+        }
+        return result
     }
 
     /**
