@@ -109,7 +109,8 @@ fun KobiNavHost(navController: NavHostController, modifier: Modifier = Modifier)
                     onSessionClick = { session ->
                         navController.navigate(Routes.editOf(session.courseId))
                     },
-                    onAddClick = { navController.navigate(Routes.EDIT) }
+                    onAddClick = { navController.navigate(Routes.EDIT) },
+                    onDeleteCourses = { courseIds -> vm.deleteCourses(courseIds) }
                 )
             }
 
@@ -138,7 +139,8 @@ fun KobiNavHost(navController: NavHostController, modifier: Modifier = Modifier)
             composable(route = Routes.SETTINGS) {
                 SettingsScreen(
                     onOpenImport = { navController.navigate(Routes.IMPORT) },
-                    onReschedule = { vm.rescheduleReminders() }
+                    onReschedule = { vm.rescheduleReminders() },
+                    onResetAll = { vm.resetAll() }
                 )
             }
 

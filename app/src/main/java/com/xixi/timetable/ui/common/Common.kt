@@ -1,10 +1,13 @@
 package com.xixi.timetable.ui.common
 
+import android.content.Context
 import com.xixi.timetable.data.week.WeekPatterns
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 /** 设置项存储文件名，与提醒层共用同一份约定（契约 8.6）。 */
 internal const val SETTINGS_PREFS_NAME = "kobi_settings"
@@ -66,3 +69,32 @@ internal fun weekIndexFromTermStart(
     val index = Math.floorDiv(days, 7L).toInt() + 1
     return index.coerceIn(1, WeekPatterns.MAX_WEEKS)
 }
+
+/**
+ * 全应用统一的日期格式 `M月d日 EEEE`（如「10月16日 星期四」）。
+ *
+ * 必须显式指定中文 Locale：`EEEE` 会跟随系统 Locale 输出，缺省会得到英文星期名。
+ */
+private val ChineseDateFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("M月d日 EEEE", Locale.CHINA)
+
+/**
+ * 今日日期文案，如「10月16日 星期四」。
+ *
+ * 契约 9.4 要求这是**唯一**的日期格式化入口，各界面不得各写一套。
+ */
+internal fun todayDateText(today: LocalDate = LocalDate.now()): String =
+    today.format(ChineseDateFormatter)
+
+/**
+ * 明日日期文案，如「10月17日 星期五」。
+ */
+internal fun tomorrowDateText(today: LocalDate = LocalDate.now()): String =
+    today.plusDays(1).format(ChineseDateFormatter)
+
+/**
+ * 读取学期起始日（第 1 教学周周一 00:00 的毫秒时间戳）；未设置返回 0（契约 8.6）。
+ */
+internal fun termStartMillisOf(context: Context): Long =
+    context.getSharedPreferences(SETTINGS_PREFS_NAME, Context.MODE_PRIVATE)
+        .getLong(KEY_TERM_START_MILLIS, 0L)

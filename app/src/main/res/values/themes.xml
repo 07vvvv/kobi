@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- 使用系统内置主题，避免引入 AppCompat / Material Components 依赖。
-         Compose 负责全部界面绘制，这里只需一个无 ActionBar 的容器主题。 -->
+         Compose 负责全部界面绘制，这里只需一个无 ActionBar 的容器主题。
+
+         启动窗口一致性（契约 9.7）：windowBackground 与首屏根 Surface 使用同一个颜色资源
+         @color/kobi_window_background，状态栏同色，避免冷启动瞬间出现白屏或跳色。
+         此处只使用 minSdk 26 已完全支持的属性（statusBarColor 需 API 21、windowLightStatusBar 需 API 23），
+         因此不会产生 lint 的 UnusedAttribute 警告。 -->
     <style name="Theme.Kobi" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/kobi_window_background</item>
+        <item name="android:statusBarColor">@color/kobi_window_background</item>
+        <!-- 浅色状态栏背景需要深色图标才可见 -->
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

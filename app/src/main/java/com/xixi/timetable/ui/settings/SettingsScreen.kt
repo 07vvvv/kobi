@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -65,7 +66,8 @@ import java.time.temporal.TemporalAdjusters
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     onOpenImport: () -> Unit = {},
-    onReschedule: () -> Unit = {}
+    onReschedule: () -> Unit = {},
+    onResetAll: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var permissionState by remember { mutableStateOf(PermissionAuditor.audit(context)) }
@@ -77,6 +79,7 @@ fun SettingsScreen(
     }
     var termStartMillis by remember { mutableStateOf(preferences.getLong(KEY_TERM_START_MILLIS, 0L)) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showResetDialog by remember { mutableStateOf(false) }
 
     // 从系统设置页返回时自动重新读取真实权限状态
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -315,6 +318,41 @@ fun SettingsScreen(
                 }
             }
 
+            item(key = "data-title") {
+                SectionTitle(text = "数据管理")
+            }
+
+            item(key = "reset") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "一键重置课程数据",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "将删除全部课程与时段，学期设置保留。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = { showResetDialog = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(text = "重置课程数据")
+                        }
+                    }
+                }
+            }
+
             item(key = "about") {
                 Text(
                     text = "kobi · 课程表",
@@ -323,6 +361,31 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+
+    if (showResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            title = { Text(text = "确认重置课程数据") },
+            text = {
+                Text(text = "将删除全部课程与时段，学期设置保留。此操作不可撤销。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showResetDialog = false
+                        onResetAll()
+                    }
+                ) {
+                    Text(text = "确认重置")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) {
+                    Text(text = "取消")
+                }
+            }
+        )
     }
 
     if (showDatePicker) {

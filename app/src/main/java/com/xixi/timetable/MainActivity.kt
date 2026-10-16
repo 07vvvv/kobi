@@ -8,19 +8,24 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.colorResource
 import androidx.navigation.compose.rememberNavController
+import com.xixi.timetable.notify.ReminderScheduler
 import com.xixi.timetable.ui.KobiNavHost
 import com.xixi.timetable.ui.theme.KobiTheme
 
 /**
  * 唯一的 Activity。
  *
- * 负责两件事：
- * 1. 首次进入时申请通知权限（Android 13+ 的运行时权限）；
- * 2. 挂载 Compose 界面，页面切换交给 KobiNavHost。
+ * 冷启动时序（契约 9.7）：
+ * 1. 先 setContent 挂载 Compose 首屏，让首帧尽快可见；
+ * 2. 首帧之后再申请通知权限（挂在 decorView.post 上），权限对话框不抢在首屏之前；
+ * 3. 同一时机触发一次提醒重排——重排要读数据库，不能占用冷启动窗口。
+ *
+ * 首屏根 Surface 使用与窗口背景同一个资源色（@color/kobi_window_background），
+ * 使「窗口背景 → Compose 首屏」之间不发生颜色跳变。
  */
 class MainActivity : ComponentActivity() {
 
@@ -31,18 +36,26 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestNotificationIfNeeded()
 
+        // 第 1 步：首屏先上屏。
         setContent {
             KobiTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = colorResource(R.color.kobi_window_background)
                 ) {
                     val navController = rememberNavController()
                     KobiNavHost(navController = navController)
                 }
             }
+        }
+
+        // 第 2、3 步：排到首帧之后的主线程消息里执行。
+        // ReminderScheduler.rescheduleAll 对外是同步方法，但内部自己切到 IO 线程，
+        // 所以这里不会阻塞主线程，也不会与首屏渲染争抢冷启动窗口。
+        window.decorView.post {
+            requestNotificationIfNeeded()
+            ReminderScheduler.rescheduleAll(this)
         }
     }
 

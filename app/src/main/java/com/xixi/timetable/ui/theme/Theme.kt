@@ -22,7 +22,9 @@ private val KobiLightColorScheme = lightColorScheme(
     onSecondaryContainer = Color(0xFF131C2B),
     tertiary = Color(0xFF6B5778),
     onTertiary = Color(0xFFFFFFFF),
-    background = Color(0xFFF8F9FC),
+    // 与 res/values/colors.xml 的 kobi_window_background 取同一个值（契约 9.7）：
+    // 窗口背景 → Compose 根 Surface → 各页面 background 全程同色，冷启动无跳变。
+    background = Color(0xFFFFFBFE),
     onBackground = Color(0xFF1A1C1E),
     surface = Color(0xFFFFFFFF),
     onSurface = Color(0xFF1A1C1E),

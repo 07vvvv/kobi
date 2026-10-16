@@ -1,13 +1,12 @@
 package com.xixi.timetable.data.importer
 
-import com.xixi.timetable.data.week.WeekPatterns
-
 /**
  * CSV 导入器。
  *
- * 表头顺序：课程名,教师,地点,星期,起始节次,结束节次,周次
+ * 表头顺序：课程名,教师,地点,星期,起始节次,结束节次,周次（契约 8.2）
  *
  * 首行若为表头（课程名 / 课程名称 / name）自动跳过；空行与空列宽容处理；
+ * 周次列复用 [TextImporter.parseWeekPatternText]，与粘贴文本导入保持同一套解析口径（契约 9.3）；
  * 任何无法解析的行写入 [ImportResult.errors]，不抛异常。
  */
 object CsvImporter {
@@ -50,7 +49,7 @@ object CsvImporter {
                 errors.add("第${lineNo}行：节次「${columns[4]}-${columns[5]}」无效")
                 continue
             }
-            val weekPattern = WeekPatterns.parseText(columns[6])
+            val weekPattern = TextImporter.parseWeekPatternText(columns[6])
             if (weekPattern == null) {
                 errors.add("第${lineNo}行：周次「${columns[6]}」无法解析")
                 continue

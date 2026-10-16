@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 夜间启动窗口：与首屏根 Surface 同色
+         （values-night/colors.xml 把 kobi_window_background 同名覆盖为深色，因此两处取色一致）。 -->
     <style name="Theme.Kobi" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/kobi_window_background_dark</item>
+        <item name="android:statusBarColor">@color/kobi_window_background_dark</item>
+        <!-- 深色状态栏背景需要浅色图标 -->
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

@@ -2,7 +2,6 @@
 
 package com.xixi.timetable.ui.grid
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -48,6 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,9 +55,9 @@ import com.xixi.timetable.data.conflict.Conflict
 import com.xixi.timetable.data.entity.CourseEntity
 import com.xixi.timetable.data.entity.SessionEntity
 import com.xixi.timetable.data.week.WeekPatterns
-import com.xixi.timetable.ui.common.KEY_TERM_START_MILLIS
-import com.xixi.timetable.ui.common.SETTINGS_PREFS_NAME
 import com.xixi.timetable.ui.common.dayLabel
+import com.xixi.timetable.ui.common.termStartMillisOf
+import com.xixi.timetable.ui.common.todayDateText
 import com.xixi.timetable.ui.common.weekIndexFromTermStart
 import com.xixi.timetable.ui.theme.CoursePalette
 
@@ -106,16 +106,16 @@ fun WeekGridScreen(
 ) {
     val context = LocalContext.current
 
-    // 当前查看的周次。学期起始日已设置（设置页写入）时默认定位到当前教学周，
-    // 否则停在第 1 周；进入本页后由用户手动切换，不再回写设置。
-    val initialWeek = remember {
-        val preferences = context.getSharedPreferences(
-            SETTINGS_PREFS_NAME,
-            Context.MODE_PRIVATE
-        )
-        weekIndexFromTermStart(preferences.getLong(KEY_TERM_START_MILLIS, 0L))
-    }
-    var week by rememberSaveable { mutableStateOf(initialWeek) }
+    // 学期起始日（设置页写入，契约 8.6）；未设置时为 0，周次按第 1 周。
+    val termStartMillis = remember { termStartMillisOf(context) }
+    // 今天实际所在的教学周，用于在切换条旁标注「当前第 N 周」，与「正在查看的周」区分开。
+    val currentWeek = remember(termStartMillis) { weekIndexFromTermStart(termStartMillis) }
+    // 全应用唯一的今日日期文案（契约 9.4）。跨天不会自动刷新，与既有 todayOfWeek 口径一致。
+    val todayText = remember { todayDateText() }
+
+    // 当前查看的周次。学期起始日已设置时默认定位到当前教学周，否则停在第 1 周；
+    // 进入本页后由用户手动切换，不再回写设置。
+    var week by rememberSaveable { mutableStateOf(currentWeek) }
 
     val courseById = remember(courses) { courses.associateBy { it.id } }
 
@@ -162,7 +162,13 @@ fun WeekGridScreen(
                 .padding(innerPadding)
                 .fillMaxSize()
         ) {
-            WeekSwitcher(week = week, onWeekChange = { week = it })
+            WeekSwitcher(
+                week = week,
+                currentWeek = currentWeek,
+                todayText = todayText,
+                termStartSet = termStartMillis > 0L,
+                onWeekChange = { week = it }
+            )
 
             if (conflicts.isNotEmpty()) {
                 ConflictBanner(conflictCount = conflicts.size)
@@ -192,26 +198,52 @@ fun WeekGridScreen(
 
 /**
  * 周次切换条。
+ *
+ * 上面一行是今日日期与当前教学周（契约 9.4）；下面一行是**正在查看**的周次，
+ * 可用左右按钮切换。两个数字含义不同：前者是今天实际所在的周，后者是当前浏览的周。
  */
 @Composable
-private fun WeekSwitcher(week: Int, onWeekChange: (Int) -> Unit) {
-    Row(
+private fun WeekSwitcher(
+    week: Int,
+    currentWeek: Int,
+    todayText: String,
+    termStartSet: Boolean,
+    onWeekChange: (Int) -> Unit
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
+            .padding(horizontal = 12.dp, vertical = 2.dp)
     ) {
-        TextButton(onClick = { onWeekChange((week - 1).coerceAtLeast(1)) }) {
-            Text(text = "上一周")
-        }
         Text(
-            text = "第 $week 周",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(horizontal = 12.dp)
+            text = if (termStartSet) {
+                "今日 $todayText · 当前第 $currentWeek 周"
+            } else {
+                "今日 $todayText · 未设置学期开始日期，按第 1 周显示"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp)
         )
-        TextButton(onClick = { onWeekChange((week + 1).coerceAtMost(WeekPatterns.MAX_WEEKS)) }) {
-            Text(text = "下一周")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            TextButton(onClick = { onWeekChange((week - 1).coerceAtLeast(1)) }) {
+                Text(text = "上一周")
+            }
+            Text(
+                text = "第 $week 周",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
+            TextButton(onClick = { onWeekChange((week + 1).coerceAtMost(WeekPatterns.MAX_WEEKS)) }) {
+                Text(text = "下一周")
+            }
         }
     }
 }

@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 夜间窗口背景：同名覆盖 values/colors.xml 的浅色值。
+         这样 MainActivity 首屏根 Surface 用 @color/kobi_window_background 取色时，
+         夜间会自动拿到深色，与 windowBackground 保持完全一致（契约 9.7）。
+         本文件的值必须与 kobi_window_background_dark 保持一致。 -->
+    <color name="kobi_window_background">#111318</color>
+
     <!-- 夜间模式下系统通知底色是深色，正文必须改用浅色字，否则几乎不可见 -->
     <color name="kobi_notif_title">#F1F3F4</color>
     <color name="kobi_notif_subtitle">#BDC1C6</color>

@@ -43,6 +43,15 @@ interface CourseDao {
     @Query("DELETE FROM sessions WHERE courseId = :courseId")
     suspend fun deleteSessionsOf(courseId: Long)
 
+    @Query("DELETE FROM courses")
+    suspend fun deleteAllCourses()
+
+    @Query("DELETE FROM sessions")
+    suspend fun deleteAllSessions()
+
+    @Query("DELETE FROM courses WHERE id IN (:ids)")
+    suspend fun deleteCoursesByIds(ids: List<Long>)
+
     @Query("SELECT * FROM sessions")
     suspend fun allSessionsOnce(): List<SessionEntity>
 

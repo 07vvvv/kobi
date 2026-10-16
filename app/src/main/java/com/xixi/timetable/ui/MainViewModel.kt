@@ -13,16 +13,25 @@ import com.xixi.timetable.data.importer.IcsImporter
 import com.xixi.timetable.data.importer.ImportResult
 import com.xixi.timetable.data.importer.TextImporter
 import com.xixi.timetable.notify.ReminderScheduler
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
  * 导入来源。
+ *
+ * 顺序与导入页的来源标签严格一一对应（契约 9.6）：
+ * CSV 表格 / 粘贴文本 / ICS 日历 / 图片识别。
+ *
+ * [IMAGE] 不参与 [MainViewModel.importFromText] 的文本解析分派：图片识别由导入页先 OCR、
+ * 把结果回填到粘贴框，用户核对后仍按 [TEXT] 解析。此处保留该枚举值是为了让来源标签与
+ * 枚举取同一份顺序，并让分派 [when] 保持穷尽。
  */
-enum class ImportKind { CSV, TEXT, ICS }
+enum class ImportKind { CSV, TEXT, ICS, IMAGE }
 
 /**
  * 界面层唯一的数据入口。
@@ -48,9 +57,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         initialValue = emptyList()
     )
 
-    /** 全量时段的两两冲突，供网格页与编辑页提示。 */
+    /**
+     * 全量时段的两两冲突，供网格页与编辑页提示。
+     *
+     * 冲突检测是纯 CPU 计算（两两比较），显式切到 Default 调度器，
+     * 避免首屏订阅时在主线程上算（契约 9.7：首屏不得做全量重计算）。
+     */
     val conflicts: StateFlow<List<Conflict>> = repository.sessions
         .map { list -> ConflictDetector.findConflicts(list) }
+        .flowOn(Dispatchers.Default)
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000L),
@@ -82,6 +97,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 批量删除课程及其全部时段（列表页单条删除与多选删除共用）。
+     *
+     * 重复的 courseId 在此去重——列表页按「时段」勾选，同一门课的多个时段会重复出现
+     * （契约 9.5），不去重会导致同一课程被删多次。
+     */
+    fun deleteCourses(courseIds: List<Long>) {
+        val distinct = courseIds.filter { it > 0L }.distinct()
+        if (distinct.isEmpty()) return
+        viewModelScope.launch {
+            repository.deleteCourses(distinct)
+            rescheduleReminders()
+        }
+    }
+
+    /**
+     * 一键重置：清空全部课程与时段，**保留**学期起始日等设置（契约 9.5）。
+     * 清空后立即重排提醒，消除已排的全量闹钟，再回调 onDone。
+     */
+    fun resetAll(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            repository.resetAll()
+            rescheduleReminders()
+            onDone()
+        }
+    }
+
     /** 读取单个课程的完整数据用于编辑回填。 */
     fun loadCourse(courseId: Long, onLoaded: (CourseEntity?, List<SessionEntity>) -> Unit) {
         viewModelScope.launch {
@@ -100,6 +142,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ImportKind.CSV -> CsvImporter.parse(text)
                 ImportKind.TEXT -> TextImporter.parse(text)
                 ImportKind.ICS -> IcsImporter.parse(text)
+                // 图片识别不经过本方法：导入页先 OCR 回填文本，再由用户按 TEXT 解析。
+                // 该分支若被真正走到，说明界面接线有误，明确报错而不是静默失败。
+                ImportKind.IMAGE -> ImportResult(
+                    items = emptyList(),
+                    errors = listOf("图片识别需先选择图片，识别结果会回填到文本框后再解析")
+                )
             }
             if (result.items.isNotEmpty()) {
                 repository.importCourses(result.items)
