@@ -217,7 +217,7 @@ private fun WeekSwitcher(
     ) {
         Text(
             text = if (termStartSet) {
-                "今日 $todayText · 当前第 $currentWeek 周"
+                "今日 $todayText · 当前第 $currentWeek 教学周"
             } else {
                 "今日 $todayText · 未设置学期开始日期，按第 1 周显示"
             },

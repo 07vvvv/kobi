@@ -6,7 +6,6 @@ import com.xixi.timetable.data.entity.CourseEntity
 import com.xixi.timetable.data.entity.SessionEntity
 import com.xixi.timetable.data.importer.ImportedCourse
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 
 /**
  * 课程仓库：界面层与提醒层的唯一数据入口。
@@ -79,22 +78,6 @@ class CourseRepository(private val dao: CourseDao) {
         val valid = items.filter { it.name.isNotBlank() }
         if (valid.isEmpty()) return 0
 
-        // 库内已有课程索引：比较前统一忽略大小写与首尾空白
-        val existingByKey = HashMap<String, CourseEntity>()
-        val existingByName = HashMap<String, CourseEntity>()
-        val existingByNameNoTeacher = HashMap<String, CourseEntity>()
-        for (course in dao.observeCourses().first()) {
-            val nameKey = normalizeKey(course.name)
-            if (nameKey.isEmpty()) continue
-            val teacherKey = normalizeKey(course.teacher)
-            if (teacherKey.isEmpty()) {
-                existingByNameNoTeacher.putIfAbsent(nameKey, course)
-            } else {
-                existingByKey.putIfAbsent("$nameKey\u0000$teacherKey", course)
-            }
-            existingByName.putIfAbsent(nameKey, course)
-        }
-
         // 批内合并：同一 key 的记录归入同一门课程
         val groups = LinkedHashMap<String, ArrayList<ImportedCourse>>()
         for (item in valid) {
@@ -106,6 +89,24 @@ class CourseRepository(private val dao: CourseDao) {
         }
 
         return database().withTransaction {
+            // 库内已有课程索引：**必须在事务内读取**。
+            // 事务外读会在并发或连点导入时基于过期快照建出重复课程（写前索引已失效）。
+            // 比较前统一忽略大小写与首尾空白。
+            val existingByKey = HashMap<String, CourseEntity>()
+            val existingByName = HashMap<String, CourseEntity>()
+            val existingByNameNoTeacher = HashMap<String, CourseEntity>()
+            for (course in dao.allCoursesOnce()) {
+                val nameKey = normalizeKey(course.name)
+                if (nameKey.isEmpty()) continue
+                val teacherKey = normalizeKey(course.teacher)
+                if (teacherKey.isEmpty()) {
+                    existingByNameNoTeacher.putIfAbsent(nameKey, course)
+                } else {
+                    existingByKey.putIfAbsent("$nameKey\u0000$teacherKey", course)
+                }
+                existingByName.putIfAbsent(nameKey, course)
+            }
+
             var created = 0
             for (groupItems in groups.values) {
                 val first = groupItems.first()

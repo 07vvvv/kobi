@@ -254,8 +254,8 @@ fun ImportScreen(
 
             item(key = "action-note") {
                 Text(
-                    text = "注意：每条记录都会新建一门课程，同一门课的多个时段会变成多门同名课程；" +
-                        "重复导入会产生重复数据，导入前建议先清理旧课表。",
+                    text = "注意：导入时「同名同教师」的记录会合并为一门课程，同一门课的多个时段会挂在" +
+                        "同一门课下；完全相同的时段会自动去重，因此重复导入同一份课表不会产生重复数据。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

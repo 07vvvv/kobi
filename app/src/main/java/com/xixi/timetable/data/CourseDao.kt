@@ -55,6 +55,13 @@ interface CourseDao {
     @Query("SELECT * FROM sessions")
     suspend fun allSessionsOnce(): List<SessionEntity>
 
+    /**
+     * 全部课程（挂起，一次性）。
+     * 用途：批量导入时**在事务内**构建「库内已有课程」索引，避免读—写竞态（契约 9.1）。
+     */
+    @Query("SELECT * FROM courses")
+    suspend fun allCoursesOnce(): List<CourseEntity>
+
     @Query("SELECT * FROM courses WHERE id = :id")
     suspend fun courseOnce(id: Long): CourseEntity?
 
