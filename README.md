@@ -102,7 +102,7 @@
 
 ## 体积与启动
 
-- **体积**：应用内置 ML Kit 中文文字识别模型（`com.google.mlkit:text-recognition-chinese`），模型随 APK 分发，因此**不需要联网、不依赖 Google 服务框架（GMS）**。代价是 APK 体积明显增大（artifacts 里两个 APK 合计约 30 MB）。构建时已限制只打包 `arm64-v8a` 与 `armeabi-v7a`，去掉手机用不到的模拟器架构。
+- **体积**：应用内置 ML Kit 中文文字识别模型（`com.google.mlkit:text-recognition-chinese`），模型随 APK 分发，因此**不需要联网、不依赖 Google 服务框架（GMS）**。代价是 APK 体积明显增大——模型本身约 16 MB，还会带入各 ABI 的原生库；构建时已限制只打包 `arm64-v8a` 与 `armeabi-v7a`，去掉手机用不到的模拟器架构以抵消一部分。确切体积以 Actions 页面里 `kobi-apk` 工件的标注为准。
 - **启动**：冷启动不在数据库读取与闹钟重排上阻塞——重排推迟到首屏显示之后，并由五条路径覆盖：数据变更、开机广播（`BOOT_COMPLETED`）、应用更新（`MY_PACKAGE_REPLACED`）、首次打开应用，以及**提醒触发时的滚动续期**（排程余量不足 3 天即整体重排，这条完全不依赖你是否打开过应用，因此长期不开也不会断档）。启动窗口背景与首屏背景同色，避免白屏跳变。
 
 ---
