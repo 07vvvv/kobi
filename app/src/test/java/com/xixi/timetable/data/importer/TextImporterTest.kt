@@ -135,4 +135,23 @@ class TextImporterTest {
             TextImporter.WEEK_FRAGMENT_RE.find("高等数学 张三 A3 周二 第1-2节 1-16周")?.value
         )
     }
+
+    @Test
+    fun `周次片段跨行时不得丢掉后面的区间`() {
+        // PDF 网格重建出来的块文本是**多行拼接**的，而课表的周次行常常恰好被换行切开
+        // （实测 `【1-4,6-16` + `周】,3301`）。归一化时若不抹掉换行，按 `,` 切开的末段会带上
+        // `\n`、`toIntOrNull()` 失败被整段丢掉，周次只剩前半截 —— 修复前这里得到的是 `1-4周`。
+        val expected = WeekPatterns.of(1, 2, 3, 4) or
+            WeekPatterns.of(6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+        assertEquals(
+            "跨行周次必须整段解析",
+            expected,
+            TextImporter.parseWeekPatternText("02/庄志晖/【1-4,6-16\n周】,3301")
+        )
+        assertEquals(
+            "跨行的单双标记也不能丢",
+            WeekPatterns.of(5, 7, 9, 11, 13, 15),
+            TextImporter.parseWeekPatternText("【5-15(单)\n周】,3301")
+        )
+    }
 }

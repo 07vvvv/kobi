@@ -182,7 +182,11 @@ object TextImporter {
             .replace("〔", " ").replace("〕", " ")
             .replace("第", "")
             .replace("周", "")
+            // 换行与回车同样要抹掉：PDF 网格重建出来的块文本是**多行拼接**的，而课表的周次行
+            // 常常恰好被换行切开（实测 `【1-4,6-16` + `周】,3301`）。不抹换行时，按 `,` 切开的
+            // 末段会带上 `\n`、`toIntOrNull()` 失败被整段丢掉，周次只剩前半截（`1-4周`）。
             .replace(" ", "").replace("\t", "")
+            .replace("\n", "").replace("\r", "")
         // 逗号被识别成点/圆点：夹在数字之间时归一为逗号（周次里没有合法小数）
         text = DOT_BETWEEN_DIGITS_RE.replace(text, ",")
         if (text.isEmpty()) return null
@@ -324,7 +328,18 @@ object TextImporter {
         }
 
         val candidates = fields.indices.filter { it != placeIndex }
-        val nameIndex = candidates.maxByOrNull { fields[it].length } ?: -1
+        // 课程名判定：只有「明显更长」的片段才优先当课程名，长度相近时取**第一个**。
+        // 片段顺序在手工文本里没有意义，但 PDF 网格重建输出的行顺序是已知的（课程名在最前），
+        // 而 `体育`(2 字) 与 `詹本乐`(3 字) 这类组合按「最长」会判反 —— 实测重建行
+        // `体育,詹本乐,东盟足球场` 曾被读成 name=詹本乐 / teacher=体育，入库课名直接错。
+        // 长度差取 2：`高等数学`(4) 对 `张三`(2) 仍取 `高等数学`，既有行为不变。
+        val longestIndex = candidates.maxByOrNull { fields[it].length } ?: -1
+        val nameIndex = when {
+            longestIndex < 0 -> -1
+            candidates.isEmpty() -> longestIndex
+            fields[longestIndex].length >= fields[candidates.first()].length + 2 -> longestIndex
+            else -> candidates.first()
+        }
         if (nameIndex < 0) {
             return FieldClassification(name = fields[0], teacher = "", location = "")
         }

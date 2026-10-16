@@ -759,13 +759,17 @@ object TimetableLayoutParser {
         if (trimmed.isEmpty()) return ""
         val lines = trimmed.split('\n')
         val result = cleanField(SEGMENT_SPLIT_RE.split(lines.first()).firstOrNull().orEmpty())
-        if (result.isEmpty() || result.length > 2) return result
-        if (!result.all { HAN_CHAR_RE.matches(it.toString()) }) return result
+        if (result.isEmpty()) return result
         for (index in 1 until lines.size) {
             val next = cleanField(SEGMENT_SPLIT_RE.split(lines[index]).firstOrNull().orEmpty())
             if (next.isEmpty()) break
-            // 下一段也必须像地点的续写（纯汉字、不太长），否则会把课序号拼进来（实测「在」+「05」）
+            // 下一段必须像地点的续写：纯汉字、不太长。否则会把课序号拼进来（实测「在」+「05」）。
             if (next.length > 4 || !next.all { HAN_CHAR_RE.matches(it.toString()) }) break
+            // 地点被换行拆开的两种形态：
+            //   1) 首段极短（`…,在` + `线教学` → 在线教学）；
+            //   2) 首段不含数字、下一段是尾字（`东盟足球` + `场` → 东盟足球场）。
+            // 含数字的首段（`2117`）一律不拼，避免把课序号并进地点。
+            if (result.length > 2 && result.any { it.isDigit() }) break
             return result + next
         }
         return result
