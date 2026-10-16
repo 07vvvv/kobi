@@ -791,12 +791,15 @@ object TimetableLayoutParser {
         for (index in 1 until lines.size) {
             val next = cleanField(SEGMENT_SPLIT_RE.split(lines[index]).firstOrNull().orEmpty())
             if (next.isEmpty()) break
-            // 下一段必须像地点的续写：纯汉字、不太长。否则会把课序号拼进来（实测「在」+「05」）。
-            if (next.length > 4 || !next.all { HAN_CHAR_RE.matches(it.toString()) }) break
-            // 地点被换行拆开的两种形态：
-            //   1) 首段极短（`…,在` + `线教学` → 在线教学）；
-            //   2) 首段不含数字、下一段是尾字（`东盟足球` + `场` → 东盟足球场）。
-            // 含数字的首段（`2117`）一律不拼，避免把课序号并进地点。
+            // 下一段必须像地点的续写：
+            //   1) 纯汉字且不超过 4 字（`…,在` + `线教学`、`东盟足球` + `场`）；
+            //   2) **单个数字字符**（`…,室外` + `1` → 室外1）。真实 PDF 里「室外1」这种带编号的
+            //      场地名会被换行拆开，而两个及以上数字一律不拼 —— 那更可能是下一门课的课序号
+            //      （实测 `…,室内` + `05` 就是这种情况，拼上去地点会变成「室内05」）。
+            val hanTail = next.length <= 4 && next.all { HAN_CHAR_RE.matches(it.toString()) }
+            val singleDigitTail = next.length == 1 && next[0].isDigit()
+            if (!hanTail && !singleDigitTail) break
+            // 首段已经含数字（`2117`、`A301`）时一律不拼，避免把课序号并进地点。
             if (result.length > 2 && result.any { it.isDigit() }) break
             return result + next
         }
