@@ -136,6 +136,9 @@ object TimetableLayoutParser {
     /** 清洗课程名时剥离的块首符号 */
     private val BULLET_STRIP_RE = Regex("""^\s*[★☆*※▪●]+\s*""")
 
+    /** 块首符号字符表：用于「符号出现在行中间」时的截断与拆行判定 */
+    private const val BULLET_CHARS = "★☆*※▪●"
+
     // 周次片段识别：**直接复用** `TextImporter` 里的那一份（单一来源），本文件不再保留副本。
     // 该正则同时用于切块信号与地点锚点，必须与周次解析口径完全一致：曾经复制过副本，
     // 结果上面「地点数字不得吞掉星期」的两条断言只修了 TextImporter 侧、副本漏修，两处行为漂移。
@@ -424,11 +427,15 @@ object TimetableLayoutParser {
      */
     private fun splitIntoBlocks(sorted: List<PositionedText>, threshold: Double): List<List<PositionedText>> {
         if (sorted.isEmpty()) return emptyList()
+        // 先把「★ 出现在行中间」的行拆开：教务系统里下一门课的课程名常常紧贴在上一门课的
+        // 地点后面（实测 `…,8-9周】,12138★创业理论与实践`），不拆会把两门课粘成一块、
+        // 并把地点读成 `12138★`。
+        val lines = expandMidLineBullets(sorted)
         val blocks = ArrayList<List<PositionedText>>()
         var current = ArrayList<PositionedText>()
         var previous: PositionedText? = null
         var currentHasWeek = false
-        for (line in sorted) {
+        for (line in lines) {
             val gap = if (previous == null) 0.0 else (line.top - previous.bottom).toDouble()
             val startsWithBullet = BULLET_RE.containsMatchIn(line.text)
             val hasWeek = TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(line.text)
@@ -447,6 +454,44 @@ object TimetableLayoutParser {
         }
         if (current.isNotEmpty()) blocks.add(current)
         return blocks
+    }
+
+    /**
+     * 把「块首符号出现在行**中间**」的一行拆成两段。
+     *
+     * 教务系统里下一门课的 `★` 常常紧贴在上一门课的地点后面（实测 `…,8-9周】,12138★创业理论与实践`），
+     * 后一段会被拆出来当作新块的开始，前一段（地点/周次）留在原块里。
+     * 行首就是 `★` 的行（正常的课程名行）原样保留。
+     *
+     * 拆分点的横向坐标按字符位置线性估算：两段本来就落在同一个格子里，这个估算只影响
+     * 少量像素级的列归属，不会改变最终结果。
+     */
+    private fun expandMidLineBullets(lines: List<PositionedText>): List<PositionedText> {
+        val result = ArrayList<PositionedText>(lines.size)
+        for (line in lines) {
+            var cutIndex = -1
+            for (index in line.text.indices) {
+                if (BULLET_CHARS.indexOf(line.text[index]) >= 0) {
+                    cutIndex = index
+                    break
+                }
+            }
+            if (cutIndex <= 0) {
+                result.add(line)
+                continue
+            }
+            val head = line.text.substring(0, cutIndex).trim()
+            val tail = line.text.substring(cutIndex).trim()
+            if (head.isEmpty() || tail.isEmpty()) {
+                result.add(line)
+                continue
+            }
+            val span = line.right - line.left
+            val splitX = line.left + (span * cutIndex) / line.text.length
+            result.add(PositionedText(head, line.left, line.top, splitX, line.bottom))
+            result.add(PositionedText(tail, splitX, line.top, line.right, line.bottom))
+        }
+        return result
     }
 
     /**
@@ -550,9 +595,37 @@ object TimetableLayoutParser {
 
     // ===================== 字段提取 =====================
 
-    /** 课程名：`★` 后到第一个 `/` 的一段，剔除课程号/学分编号 */
+    /**
+     * 课程名：从 `★` 之后**逐行累加**，直到遇到「带 `/` 的行」「纯代码/数字行」或「周次行」为止。
+     *
+     * 为什么不直接截到第一个 `/`：教务系统把一个格子的四行元数据紧挨着排（课程名 / 课程号 /
+     * 课序号+教师 / 周次+地点），整块截到第一个 `/` 会把**下一行的课序号**并进课程名 ——
+     * 实测真实课表 PDF 里 `★计量经济学` 那一格会变成 `计量经济学02`。
+     *
+     * 为什么也不只取第一行：真实课表里**课程名会跨行**（`★中级财务会计模拟实` 的下一行是
+     * `验及安全防护项目`），只取第一行会把名字截断。
+     *
+     * 累加在下面三种情况立刻收尾，因此上面两个毛病都能避开：
+     * - 这一行以 `/` 开头（`/ (编号)课程号.`）—— 课程名到上一行为止；
+     * - 这一行是纯代码 / 纯数字（`(3)`、`02`）—— 那是班号或课序号；
+     * - 这一行含周次片段（`【1-16周】,3301`）—— 已经到元数据尾部了。
+     *
+     * 万一一段都没累加出来，再退回原来的整块取法，保证不丢块。
+     */
     private fun extractCourseNameCandidate(text: String): String {
-        val head = text.replaceFirst(BULLET_STRIP_RE, "").substringBefore('/')
+        val strippedText = text.replaceFirst(BULLET_STRIP_RE, "")
+        val builder = StringBuilder()
+        for (line in strippedText.split('\n')) {
+            val piece = cleanField(stripCodes(line.substringBefore('/')))
+            if (!hasLetterOrDigit(piece)) break
+            if (isCodeLike(piece) || NUMERIC_ONLY_RE.matches(piece)) break
+            if (TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(line)) break
+            builder.append(piece)
+            if (line.contains('/')) break
+        }
+        if (hasLetterOrDigit(builder.toString())) return builder.toString()
+
+        val head = strippedText.substringBefore('/')
         val stripped = cleanField(stripCodes(head))
         if (!hasLetterOrDigit(stripped)) return ""
         return stripped
@@ -582,14 +655,14 @@ object TimetableLayoutParser {
     private fun extractLocation(text: String, nameCandidate: String, teacher: String): String {
         val weekMatch = TextImporter.WEEK_FRAGMENT_RE.find(text)
         if (weekMatch != null) {
-            val candidate = firstSegmentAfterPunctuation(text.substring(weekMatch.range.last + 1))
+            val candidate = trimAtBullet(firstSegmentAfterPunctuation(text.substring(weekMatch.range.last + 1)))
             if (candidate.isNotEmpty() && !isStrongCode(candidate)) return candidate
         }
         val segments = splitSegments(text).map { cleanField(it) }.filter { it.isNotEmpty() }
         for (segment in segments.asReversed()) {
             if (segment == nameCandidate || segment == teacher) continue
             if (isStrongCode(segment) || TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(segment)) continue
-            if (isPlaceLike(segment)) return segment
+            if (isPlaceLike(segment)) return trimAtBullet(segment)
         }
         return ""
     }
@@ -600,6 +673,19 @@ object TimetableLayoutParser {
         if (trimmed.isEmpty()) return ""
         val firstLine = trimmed.substringBefore('\n')
         return cleanField(SEGMENT_SPLIT_RE.split(firstLine).firstOrNull().orEmpty())
+    }
+
+    /**
+     * 截断到块首符号（`★` 等）之前。
+     *
+     * 教务系统里**下一门课的 `★` 常常紧贴在上一门课的地点后面**（实测 `…,8-9周】,12138★`），
+     * 不截断就会把地点读成 `12138★`。地点会进通知，必须干净。
+     */
+    private fun trimAtBullet(raw: String): String {
+        for (index in raw.indices) {
+            if (BULLET_CHARS.indexOf(raw[index]) >= 0) return raw.substring(0, index).trim()
+        }
+        return raw
     }
 
     /** 课程名最终兜底：块内最长的、非编号非噪声片段 */

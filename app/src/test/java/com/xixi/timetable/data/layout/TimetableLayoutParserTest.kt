@@ -510,4 +510,59 @@ class TimetableLayoutParserTest {
         assertEquals("高等数学", parsed.items[0].name)
         assertAllParseable(result)
     }
+
+    // ===================== ⑰ 真实课表 PDF 的两种结构（第四轮新增） =====================
+
+    /**
+     * 真实教务课表 PDF 里，下一门课的 `★` 会紧贴在上一门课的**地点后面**
+     * （`…,6-16周】,3301★创业理论与实践`）。不把带 `★` 的行拆开，两门课会被粘成一块，
+     * 而且地点会被读成 `3301★`——地点要进通知，必须干净。
+     */
+    @Test
+    fun `行中间出现块首符号时两门课不得粘成一块且地点不带符号`() {
+        val lines = ArrayList<PositionedText>()
+        lines += (0..6).map { headerLine(it) }
+        lines += (1..4).map { sectionLabel(it) }
+
+        lines += cellLine("★计量经济学", 0, 1, 0)
+        lines += cellLine("(0000)0001", 0, 1, 1)
+        lines += cellLine("02/庄志晖", 0, 1, 2)
+        lines += cellLine("【1-4,6-16周】,3301★创业理论与实践", 0, 1, 3)
+
+        val result = TimetableLayoutParser.parse(lines)
+
+        assertAllParseable(result)
+        assertTrue("应识别出「计量经济学」：${result.lines}", result.lines.any { it.contains("计量经济学") })
+        assertTrue(
+            "应识别出「创业理论与实践」：${result.lines}",
+            result.lines.any { it.contains("创业理论与实践") }
+        )
+        assertTrue("地点不得带块首符号：${result.lines}", result.lines.none { it.contains("3301★") })
+        assertTrue("地点应是 3301：${result.lines}", result.lines.any { it.contains("3301") })
+    }
+
+    /**
+     * 真实课表里课程名会**跨行**（`★中级财务会计模拟实` 的下一行是 `验及安全防护项目`），
+     * 再下一行才是课序号 `05/卢亭薇`。课程名要逐行累加，但不能把课序号也累加进去。
+     */
+    @Test
+    fun `课程名跨行时逐行累加且不被下一行的课序号污染`() {
+        val lines = ArrayList<PositionedText>()
+        lines += (0..6).map { headerLine(it) }
+        lines += (1..4).map { sectionLabel(it) }
+
+        lines += cellLine("★中级财务会计模拟实", 0, 1, 0)
+        lines += cellLine("验及安全防护项目", 0, 1, 1)
+        lines += cellLine("05/卢亭薇", 0, 1, 2)
+        lines += cellLine("【1-4周】,3310", 0, 1, 3)
+
+        val result = TimetableLayoutParser.parse(lines)
+
+        assertAllParseable(result)
+        assertTrue(
+            "课程名应跨行合并：${result.lines}",
+            result.lines.any { it.contains("中级财务会计模拟实验及安全防护项目") }
+        )
+        assertTrue("课序号不得污染课程名：${result.lines}", result.lines.none { it.contains("05卢亭薇") })
+    }
 }
