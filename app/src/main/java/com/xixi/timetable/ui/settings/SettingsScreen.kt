@@ -302,7 +302,7 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "支持 CSV、粘贴文本、.ics 日历与图片识别四种来源，解析成功后立即写入课表，" +
+                            text = "支持 CSV、粘贴文本、.ics 日历与 PDF 课表四种来源，解析成功后立即写入课表，" +
                                 "无法识别的行会原样列出。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

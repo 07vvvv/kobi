@@ -4,7 +4,6 @@ package com.xixi.timetable.ui.importer
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -45,15 +44,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xixi.timetable.data.importer.ImportResult
-import com.xixi.timetable.data.ocr.ImageTextRecognizer
-import com.xixi.timetable.data.ocr.OcrLine
-import com.xixi.timetable.data.ocr.TimetableGridParser
+import com.xixi.timetable.data.pdf.PdfTimetableImporter
 import com.xixi.timetable.ui.ImportKind
 import com.xixi.timetable.ui.MainViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-/** 四种来源的展示名，顺序必须与 ImportKind（CSV, TEXT, ICS, IMAGE）一致。 */
-private val kindLabels = listOf("CSV 表格", "粘贴文本", "ICS 日历", "图片识别")
+/** 四种来源的展示名，顺序必须与 ImportKind（CSV, TEXT, ICS, PDF）一致。 */
+private val kindLabels = listOf("CSV 表格", "粘贴文本", "ICS 日历", "PDF 课表")
 
 /** 每种来源的输入提示，与数据层导入器的实际行为保持一致。 */
 private val kindHints = listOf(
@@ -65,19 +64,18 @@ private val kindHints = listOf(
     ".ics 里的钟点时间会按作息表换算成节次：第 1-12 节的起始时间为 " +
         "08:00 / 08:55 / 10:00 / 10:55 / 14:00 / 14:55 / 16:00 / 16:55 / 19:00 / 19:55 / 20:50 / 21:45，" +
         "每节 55 分钟，匹配容差 30 分钟",
-    "点「选择图片」调用系统图片选择器（无需存储权限）。识别后会先按课表网格重建：" +
-        "从表头识别星期、从最左列识别节次，把重建出的「星期 + 节次 + 课程」规范化文本" +
-        "填入上方文本框；若重建失败则退回 OCR 原始文字供手动整理。" +
-        "请核对无误后再点「解析并导入」——图片识别不会跳过核对直接写入课表。"
+    "点「选择 PDF 文件」从系统文件选择器里挑一份课表 PDF。只对教务系统导出的矢量文本 PDF " +
+        "有效：按文字的页面坐标重建课表（表头认星期、最左列认节次），重建结果会填到上方文本框，" +
+        "请核对无误后再点「解析并导入」——PDF 不会跳过核对直接写入课表；" +
+        "扫描件、图片版 PDF 里没有文字，识别不出来。"
 )
 
 /**
- * 导入页：选择来源 → 粘贴内容或选图识别 → 解析导入 → 查看结果。
+ * 导入页：选择来源 → 粘贴内容或选择 PDF 重建 → 解析导入 → 查看结果。
  *
- * 图片识别（[ImportKind.IMAGE]）分两步：先把 OCR 结果（带坐标）交给
- * [TimetableGridParser] 做课表网格重建，把结果作为**规范化文本**回填文本框；
- * 重建不出结构时退回 OCR 原文。两种情况都只回填文本，最终仍由用户点
- * 「解析并导入」按 TEXT 流程入库，绝不跳过核对。
+ * PDF 课表（[ImportKind.PDF]）分两步：先读取 PDF 字节并交给 [PdfTimetableImporter]
+ * 按坐标重建为**规范化文本**回填文本框；重建不出结构时给出可读原因。两种情况都只回填
+ * 文本，最终仍由用户点「解析并导入」按 TEXT 流程入库，绝不跳过核对。
  *
  * @param onDone 导入结束后返回上一页。
  */
@@ -101,64 +99,62 @@ fun ImportScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // 系统图片选择器：PickVisualMedia 无需存储权限。用户取消时 uri 为 null。
-    val pickImage = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
+    // 系统文件选择器：OpenDocument 只筛 PDF，无需存储权限。用户取消时 uri 为 null。
+    val pickPdf = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
     ) { picked: Uri? ->
         if (picked == null) {
-            status = "已取消选择图片"
+            status = "已取消选择文件"
         } else {
+            val pickedUri = picked
             busy = true
-            status = "正在识别图片，请稍候…"
+            status = "正在读取 PDF，请稍候…"
             scope.launch {
-                // 接口自身承诺不抛异常，这里再兜一层，保证界面永不崩。
-                val ocrLines: List<OcrLine> = try {
-                    ImageTextRecognizer.recognize(context, picked)
-                } catch (t: Throwable) {
-                    emptyList()
+                // 读字节与解析都是阻塞式工作（解析是纯 CPU，且可能要解压流），
+                // 统一切到 IO 线程，完成后自动回到主线程更新 state。
+                val parsed = withContext(Dispatchers.IO) {
+                    // 解析器承诺绝不抛异常；这里再兜一层，保证界面永不崩、busy 不卡死。
+                    try {
+                        val bytes = context.contentResolver.openInputStream(pickedUri)?.use { input ->
+                            input.readBytes()
+                        }
+                        if (bytes == null || bytes.isEmpty()) {
+                            null
+                        } else {
+                            PdfTimetableImporter.parse(bytes)
+                        }
+                    } catch (t: Throwable) {
+                        null
+                    }
                 }
                 busy = false
 
-                // 先做课表网格重建：课表截图的「星期」在表头、「节次」在最左列，
-                // 格子内没有这两个字样，直接按行解析必然全败，所以必须先按坐标重建。
-                val parsed: TimetableGridParser.Result? = try {
-                    TimetableGridParser.parse(ocrLines)
-                } catch (t: Throwable) {
-                    // 解析异常一律降级为「重建失败」，绝不让界面崩溃。
-                    null
-                }
-
-                val rebuilt = parsed?.lines.orEmpty()
-                // 解析器没给出原文行数时（异常降级），以 OCR 行数兜底判断「有没有识别到文字」
-                val sourceCount = parsed?.sourceLineCount ?: ocrLines.size
-                // 降级到视觉行重建时被丢弃（无法解析）的行数；GRID 与 RAW 恒为 0。
-                // 有丢弃却不告知用户，会让「重建成功」看起来比实际完整。
-                val dropped = parsed?.droppedLineCount ?: 0
-
-                when {
-                    rebuilt.isNotEmpty() -> {
-                        // 回填规范化文本（不是 OCR 原文），用户核对后仍需手动点「解析并导入」。
-                        text = rebuilt.joinToString("\n")
-                        result = null
-                        status = if (dropped > 0) {
-                            "已从图片重建 ${rebuilt.size} 个时段（另有 $dropped 行无法识别，未填入），" +
-                                "请核对后再点「解析并导入」"
-                        } else {
-                            "已从图片重建 ${rebuilt.size} 个时段，请核对后再点「解析并导入」"
+                if (parsed == null) {
+                    status = "读取 PDF 失败：文件打不开或是空文件，请换一份再试"
+                } else {
+                    val outcome = parsed
+                    when {
+                        outcome.lines.isNotEmpty() -> {
+                            // 回填重建出的规范化文本，用户核对后仍需手动点「解析并导入」。
+                            text = outcome.lines.joinToString("\n")
+                            result = null
+                            status = if (outcome.droppedLineCount > 0) {
+                                "已从 PDF 重建 ${outcome.lines.size} 个时段（另有 " +
+                                    "${outcome.droppedLineCount} 行无法识别，未填入），" +
+                                    "请核对后再点「解析并导入」"
+                            } else {
+                                "已从 PDF 重建 ${outcome.lines.size} 个时段，请核对后再点「解析并导入」"
+                            }
                         }
-                    }
 
-                    sourceCount > 0 -> {
-                        // 重建失败但确实识别到了文字：把 OCR 原文填入，交给用户手动整理。
-                        // 这与「完全没有文字」是两种不同的失败原因，提示不得混淆。
-                        text = ocrLines.joinToString("\n") { line -> line.text }
-                        result = null
-                        status = "识别到 $sourceCount 行文字，但未能识别出课表结构：" +
-                            "已把原始文字填入下方，可手动整理后再导入"
-                    }
+                        outcome.failure != null -> {
+                            // 解析器给出的可读中文原因，原样展示，不改写。
+                            status = outcome.failure
+                        }
 
-                    else -> {
-                        status = "没有识别到文字，请换一张更清晰、文字更完整的图片重试"
+                        else -> {
+                            status = "PDF 里没有提取到可用文字，可能是扫描件或图片版课表"
+                        }
                     }
                 }
             }
@@ -196,7 +192,7 @@ fun ImportScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    // 四个标签横排可能超出窄屏宽度，允许横向滚动，保证「图片识别」始终可达。
+                    // 四个标签横排可能超出窄屏宽度，允许横向滚动，保证「PDF 课表」始终可达。
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -218,22 +214,18 @@ fun ImportScreen(
                 }
             }
 
-            if (kind == ImportKind.IMAGE) {
-                item(key = "pick-image") {
+            if (kind == ImportKind.PDF) {
+                item(key = "pick-pdf") {
                     Column {
                         Button(
                             onClick = {
-                                // 官方 Kotlin 示例写法：顶层工厂函数 PickVisualMediaRequest(mediaType)。
-                                pickImage.launch(
-                                    PickVisualMediaRequest(
-                                        ActivityResultContracts.PickVisualMedia.ImageOnly
-                                    )
-                                )
+                                // OpenDocument：只筛 PDF，由系统文件选择器返回 content:// uri。
+                                pickPdf.launch(arrayOf("application/pdf"))
                             },
                             enabled = !busy,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(text = "选择图片")
+                            Text(text = "选择 PDF 文件")
                         }
                         val currentStatus = status
                         if (currentStatus != null) {
@@ -271,9 +263,9 @@ fun ImportScreen(
                     Button(
                         onClick = {
                             busy = true
-                            // 图片识别模式下文本已由 OCR 回填，按 TEXT 走既有文本解析流程。
-                            // （MainViewModel 的 IMAGE 分支只用于兜底报错，界面不应走到它。）
-                            val parseKind = if (kind == ImportKind.IMAGE) ImportKind.TEXT else kind
+                            // PDF 模式下文本已由重建结果回填，按 TEXT 走既有文本解析流程。
+                            // （MainViewModel 的 PDF 分支只用于兜底报错，界面不应走到它。）
+                            val parseKind = if (kind == ImportKind.PDF) ImportKind.TEXT else kind
                             viewModel.importFromText(text = text, kind = parseKind) { importResult ->
                                 result = importResult
                                 busy = false

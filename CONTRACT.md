@@ -397,7 +397,7 @@ object CoursePalette {
 }
 ```
 
-### 4.2 导航与入口
+### 4.2 页面跳转与入口
 
 `ui/KobiNavHost.kt`：
 
@@ -820,3 +820,174 @@ object Foo {
    （`extractLocation`）直接复用 `TextImporter.WEEK_FRAGMENT_RE`（`internal`），不得再复制副本 ——
    本轮就出现过「副本漏改、两处行为漂移」。`WEEK_ODD_EVEN_RE` 同样加第 2 条断言，
    避免「单 周一」这类畸形组合破坏行内星期。
+
+（注：该条中的 `TimetableGridParser` 已在第四轮改名为 `TimetableLayoutParser`，见 11.2。）
+
+---
+
+## 11. 第四轮变更契约：PDF 课表导入与图片识别下线（2026-10-17）
+
+本轮三项变更：**删除图片识别**、**新增 PDF 课表导入**、**周课表课程块显示改进**。
+以下条目为唯一裁决，实现方不得自行变更。
+
+### 11.1 图片识别下线的决定与理由 ★
+
+图片识别（离线 OCR + 课表网格重建）整条路线**整体删除**：不是停用、不是保留入口后置灰。
+
+1. **用户明确要求**下线该功能。
+2. 该路线在第二轮、第三轮连续两轮修复后**仍未达到稳定可用**。第三轮已把方案改为「识别结果保留坐标 + 网格重建」（见第 10 章），仍无法稳定还原课表结构。
+
+删除范围（截至本轮，仓库内已无残留）：
+
+| 已删除项 | 说明 |
+|---|---|
+| `com.xixi.timetable.data.ocr` 整个包 | 原 `ImageTextRecognizer.kt`、`OcrLine.kt`、`TimetableGridParser.kt` 三个文件 |
+| 测试 `TimetableGridParserTest.kt` | 随实现一并删除 |
+| ML Kit 中文文字识别依赖 | 已从 `gradle/libs.versions.toml` 与 `app/build.gradle.kts` 移除 |
+| `ndk { abiFilters }` | 其唯一理由是抵消 ML Kit 的 native 库体积，一并删除 |
+| 导入页的「选择图片」入口 | 导入来源仍为四种，「图片识别」这一项被「PDF 课表」替换 |
+
+**因此仓库内不再包含任何 `.so` 原生库，APK 中也不再内置 OCR 模型。**
+
+### 11.2 名称迁移（阅读历史章节时的旧名对照）★
+
+第三轮契约（第 10 章）与更早章节中出现的标识，本轮已改名或迁移，按此对照：
+
+| 旧名（历史章节） | 现名（本轮起） | 变化 |
+|---|---|---|
+| `data.ocr.OcrLine` | `data.layout.PositionedText` | 泛化为通用定位文本，字段 `text / left / top / right / bottom`（Int，左上角原点、y 向下） |
+| `data.ocr.TimetableGridParser` | `data.layout.TimetableLayoutParser` | 改为通用布局重建器，输入由 OCR 结果换成 `List<PositionedText>`；算法保持不变 |
+
+算法不变的部分（原样保留）：星期表头识列、最左列识节次、按 ★ 与周次行切块、按纵向重叠定节次范围、失败降级为视觉行 / 原文。
+
+历史章节中的旧名**保留为当时的事实**，不再回改；新代码一律使用现名。
+
+### 11.3 PDF 课表导入的完整数据流 ★
+
+来源枚举 `ImportKind` 共四项，顺序固定：`CSV, TEXT, ICS, PDF`；界面展示名依次为「CSV 表格」「粘贴文本」「ICS 日历」「PDF 课表」。
+
+PDF 这一条从选文件到入库的完整链路：
+
+| 步骤 | 承担者 | 职责与产出 |
+|---|---|---|
+| 1 选文件 | `ui/importer/ImportScreen.kt` | 系统文件选择器 `ActivityResultContracts.OpenDocument`，MIME 只给 `application/pdf`；**不需要存储权限**；用户取消时 uri 为 null |
+| 2 读字节 | `ImportScreen` | 从 uri 读出 `ByteArray`；读不出时给出可读提示 |
+| 3 解出带坐标文本项与表格线段 | `data/pdf/PdfTextExtractor.extractAllPages(bytes)` | 返回 `List<PdfPageText>`：`items` 是带坐标文本项、`segments` 是描边直线段；坐标为 PDF 用户空间（原点左下角、y 向上）；只抛 `PdfParseException` |
+| 4 聚行 / 切片段 / 坐标翻转 | `data/pdf/PdfTimetableImporter.parse(bytes)` | 按基线聚行、按水平间隙切片段；把坐标翻成左上角原点（y 向下）并乘 `COORDINATE_SCALE` 取整 |
+| 4b 由表格线反推格子行带 | `PdfTimetableImporter`（内部 `buildCellBands`） | 竖直线 → 列边界，水平线 → 每列各自的行边界，产出 `List<TimetableLayoutParser.CellBand>`；提不到线段时为空列表 |
+| 5 网格重建 | `data/layout/TimetableLayoutParser.parse(List<PositionedText>, List<CellBand>)` | 完成「节次 × 星期」网格重建，输出规范化文本行 `Result.lines` |
+| 6 回填文本框 | `ImportScreen` | **只回填文本**，不写库 |
+| 7 用户核对 | 用户 | 在文本框里检查并修改 |
+| 8 解析并导入 | 用户点按钮 → `TextImporter` | 按 `TEXT` 路径入库，与「粘贴文本」共用同一条入库路径 |
+
+为什么必须走坐标而不是直接读文字：课表的「星期」在表头、「节次」在最左列，课程文字在网格内部，三者物理上不在同一行；把 PDF 文字按出现顺序拼起来逐行解析，必然得到 0 条。
+
+**关于「表格线反向推定节次」（本轮新增的关键设计）**：
+
+- 真实教务课表 PDF 的表格网格是用 `m` / `l` 路径加 `S` 描边画出来的；**合并单元格中间的那条横线不会被画**，因此「某一列存在哪些行边界线」直接给出了每个格子的行跨度 —— 也就是课程的节次范围。
+- 为什么必须用它：一个格子只放四行元数据（课程名 / 课程号 / 学分教师 / 周次地点），这四行文字的总高常**超过一节课的行高**，单靠「拿块的纵向范围去套节次带」会把单节课普遍误判成连堂；而文字里不含节数信息，**表格线是节次数量的唯一精确来源**。
+- 具体做法：竖直线去重排序得到列的左右边界；用星期表头文字的水平中心把列映射到星期几（表头缺失时按列序兜底）；最左列左侧的纯数字文本项（`1`~`12`）给出各节次位置；水平线给出**每一列各自**的行边界，相邻两条边界围成一个格子行带。
+- 产物是 `TimetableLayoutParser.CellBand(weekday, top, bottom, startSection, endSection)`，经 `parse(lines, cellBands)` 传入重建器。
+- **拿不到线段时自动退化**为纯文字推断路径（`cellBands` 为空即走原逻辑），行为与既有版本一致。
+
+关键 API 形状（**签名即契约**，不得擅自更改）：
+
+```kotlin
+// data/pdf/PdfTextItem.kt
+data class PdfTextItem(val text: String, val x: Float, val y: Float, val fontSize: Float)
+data class PdfLineSegment(val x1: Float, val y1: Float, val x2: Float, val y2: Float)
+data class PdfPageText(
+    val width: Float,
+    val height: Float,
+    val items: List<PdfTextItem>,
+    val segments: List<PdfLineSegment> = emptyList()   // 解析器不收集线段时为空，重建退化为纯文字推断
+)
+class PdfParseException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+// data/pdf/PdfTextExtractor.kt
+object PdfTextExtractor { fun extractAllPages(bytes: ByteArray): List<PdfPageText> }
+
+// data/pdf/PdfTimetableImporter.kt
+data class PdfImportResult(
+    val lines: List<String>,
+    val sourceLineCount: Int,
+    val droppedLineCount: Int,
+    val failure: String?
+)
+object PdfTimetableImporter { fun parse(bytes: ByteArray): PdfImportResult }
+
+// data/layout/PositionedText.kt
+data class PositionedText(val text: String, val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+// data/layout/TimetableLayoutParser.kt
+object TimetableLayoutParser {
+    enum class Mode { GRID, VISUAL_LINES, RAW }
+
+    /** 来自 PDF 表格线的格子行带；top / bottom 为内部坐标（y 向下） */
+    data class CellBand(
+        val weekday: Int,
+        val top: Int,
+        val bottom: Int,
+        val startSection: Int,
+        val endSection: Int
+    )
+
+    data class Result(val lines: List<String>, val mode: Mode, val sourceLineCount: Int, val droppedLineCount: Int = 0)
+
+    /** cellBands 为空时行为与从前完全一致（纯靠文字位置推断节次） */
+    fun parse(lines: List<PositionedText>, cellBands: List<CellBand> = emptyList()): Result
+}
+```
+
+自写解析器的能力范围（**零第三方依赖**，不使用 pdfbox 等）：经典 xref 表、xref 流、对象流 `ObjStm`、`FlateDecode` / `ASCIIHexDecode` / `ASCII85Decode` / `RunLengthDecode`、`Type0` + `UniGB-UCS2-H` 编码与 `ToUnicode` CMap、Form XObject、页面旋转，以及**描边直线段**（`m` / `l` 路径 + `S` 描边，用于表格线反推节次）。
+
+### 11.4 六条硬约束（后续改动不得破坏）★
+
+**约束 1：异常不得穿透到界面。**
+`PdfTimetableImporter.parse` **绝不抛异常**：任何失败都转成 `PdfImportResult.failure` 里的一句可读中文。
+`PdfTextExtractor.extractAllPages` 只抛 `PdfParseException`。
+界面层不得依赖任何其它异常类型；出现新的失败形态时，新增可读文案，而不是把异常向上抛。
+已落地的文案（**不得退化为静默失败**）：
+
+- 扫描件 / 图片版：「这个 PDF 是扫描件或图片版课表：里面没有可提取的文字，无法重建课表」
+- 有文字但重建不出结构：「已从 PDF 提取到 N 处文字，但没能识别出课表结构：…」
+- 文件读取失败：「读取 PDF 失败：文件打不开或是空文件，请换一份再试」
+
+**约束 2：`TimetableLayoutParser.Result.lines` 的语义保证不变。**
+非空 ⟺ 其中每一行都能被 `TextImporter` 成功解析；**重建失败时必须是空列表**（此时 `mode == RAW`，界面据此回填原始文字）。
+这条既是「不该回填不可解析的行」的防线，也是「回填了就必须可解析」的防线。
+
+**约束 3：PDF 导入与其它来源同权 —— 只回填文本框，不跳过核对。**
+解析结果一律写进文本框，**必须由用户点「解析并导入」才写库**；PDF 路径不得自行入库、不得自动提交、不得省掉确认步骤。
+
+**约束 4：坐标尺度是耦合点 —— `COORDINATE_SCALE = 1.5f`。**
+PDF 的 pt 坐标乘 1.5 后取整再进布局重建器，用来对齐 `TimetableLayoutParser` 里那一套按**图片像素**调出来的阈值。
+依据：教务课表 PDF 的星期列宽约 106pt、节次行距约 38pt、正文字号约 11pt，乘 1.5 后约为 159 / 57 / 16.5，与样张图片的 150 / 57 / 18 基本一致。
+**改这个倍数必须同步复核 `TimetableLayoutParser` 的全部坐标阈值**，否则网格识列与切块会整体失效。
+
+**约束 5：周课表课程块必须保证课程名称与上课地点可完整阅读，且点击可查看完整详情。**
+`ui/grid/WeekGridScreen.kt`：课程名与地点的字号、最大折行数**按课程块的实际宽高（并结合用户的字体缩放）动态计算**，不写死；列宽已加大以容纳多行文本。
+点击课程块弹出详情面板，完整展示课程名 / 教师 / 地点 / 星期 / 节次 / 周次，并可从中进入编辑页（原「点击直接跳编辑页」的能力仍然可达，只是多了一层确认）。
+
+**约束 6：节次判定的首选依据是表格格子行带，退化路径必须保留且不得静默误判。**
+当 `cellBands` 非空时，`sectionRange` **必须优先**按格子行带定节次，判据固定为「**区间包含**」，不是「最近邻」：
+1. 锚点取块的**首行文本的垂直中心**（`block.first().centerY`），不是块整体的纵向中心 —— 一个格子的四行元数据总高常超过一节课的行高，文字向下溢出会把块整体中心带偏，首行中心才落在课程实际开始的那一带里；
+2. 在 `weekday` 相同的行带中取满足 `anchor >= top && anchor < bottom` 的那一条，即**半开区间 `[top, bottom)` 包含**；用半开是为了让恰好压在相邻两带交界上的块只归属下面那条带，否则节次会整体上移一节；
+3. 命中即返回 `startSection` 与 `maxOf(startSection, endSection)`（保证 `endSection` 不小于 `startSection`）；未命中任何行带时**继续走退化路径**，不得直接返回兜底值。
+`cellBands` 为空（解析器提不到描边线段）时，**必须**退化为原有的「按块纵向范围与节次带重叠、取重叠最大者」的推断路径（`sectionRows` 也为空时再退到 `1 to 1`），不得因为拿不到线段就放弃重建或返回空结果。
+**不得**改用「块整体中心落在哪个区间」或「块的顶边最接近哪条上边界」之类的近似判据替代上述写法：前者的锚点会被文字向下溢出带偏，后者是最近邻匹配、在相邻格子行高不等时会跨带误配，二者都会把单节课误判成连堂或让节次整体偏移。
+（补注：本条锚点与半开区间写法以代码现状为准，见 `TimetableLayoutParser.kt` 的 `sectionRange`。）
+
+### 11.5 已知边界（界面必须给出明确提示，不得静默失败）★
+
+- **只支持矢量文本 PDF**（教务系统打印 / 导出的那种，字符以文本对象形式存在）。
+- 扫描件、图片版 PDF **没有可提取文字**，无法重建 → 给出 11.4 约束 1 中的专用文案，不静默失败。
+- 加密 PDF 等自写解析器不支持的特性 → 给出可读错误文案（写入 `failure`），不抛异常。
+- 具体支持与不支持的 PDF 特性组合，以 `PdfTextExtractor` 的实际实现为准；本轮未逐项实测的编解码组合标记为**待验证**。
+- **待验证（表格线反推节次这条路径）**：它依赖解析器真的能从内容流里提取到描边直线段（即 `PdfPageText.segments` 非空）。该路径**尚未在真机 / CI 上做过端到端验证**。若某份 PDF 的网格不是用 `m` / `l` 路径加 `S` 描边画的（例如用填充矩形、位图边框或 Form XObject 内嵌），`segments` 会为空，此时只能走 11.4 约束 6 的退化路径，节次精度回落到纯文字推断的水平。
+
+### 11.6 可验证性 ★
+
+- `app/src/test/java/com/xixi/timetable/data/layout/TimetableLayoutParserTest.kt` 覆盖布局重建。
+- `app/src/test/resources/timetable-fixture.pdf` 是**虚构**的课表 PDF fixture（不含任何真实学号与姓名），用于覆盖 PDF 解析端到端。
+- 验收方式：CI 的 `./gradlew testDebugUnitTest` 全绿；PDF 导入路径另需**真机人工核对**（选一份教务系统导出的课表 PDF，核对回填文本与入库结果）。

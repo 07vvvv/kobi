@@ -25,13 +25,13 @@ import kotlinx.coroutines.launch
  * 导入来源。
  *
  * 顺序与导入页的来源标签严格一一对应（契约 9.6）：
- * CSV 表格 / 粘贴文本 / ICS 日历 / 图片识别。
+ * CSV 表格 / 粘贴文本 / ICS 日历 / PDF 课表。
  *
- * [IMAGE] 不参与 [MainViewModel.importFromText] 的文本解析分派：图片识别由导入页先 OCR、
- * 把结果回填到粘贴框，用户核对后仍按 [TEXT] 解析。此处保留该枚举值是为了让来源标签与
- * 枚举取同一份顺序，并让分派 [when] 保持穷尽。
+ * [PDF] 不参与 [MainViewModel.importFromText] 的文本解析分派：PDF 课表由导入页先选择文件、
+ * 重建为规范化文本并回填到粘贴框，用户核对后仍按 [TEXT] 解析。此处保留该枚举值是为了让
+ * 来源标签与枚举取同一份顺序，并让分派 [when] 保持穷尽。
  */
-enum class ImportKind { CSV, TEXT, ICS, IMAGE }
+enum class ImportKind { CSV, TEXT, ICS, PDF }
 
 /**
  * 界面层唯一的数据入口。
@@ -142,12 +142,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ImportKind.CSV -> CsvImporter.parse(text)
                 ImportKind.TEXT -> TextImporter.parse(text)
                 ImportKind.ICS -> IcsImporter.parse(text)
-                // 图片识别不经过本方法：导入页先 OCR（保留坐标）→ 按课表网格重建为规范化文本，
+                // PDF 课表不经过本方法：导入页先选择 PDF 文件并重建为规范化文本，
                 // 再由用户核对后按 TEXT 解析。该分支若被真正走到，说明界面接线有误，
                 // 明确报错而不是静默失败。
-                ImportKind.IMAGE -> ImportResult(
+                ImportKind.PDF -> ImportResult(
                     items = emptyList(),
-                    errors = listOf("图片识别需先选择图片，识别结果会回填到文本框后再解析")
+                    errors = listOf("PDF 课表需先在导入页选择文件并重建，结果会回填到文本框后再解析")
                 )
             }
             if (result.items.isNotEmpty()) {

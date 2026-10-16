@@ -1,4 +1,4 @@
-package com.xixi.timetable.data.ocr
+package com.xixi.timetable.data.layout
 
 import com.xixi.timetable.data.importer.TextImporter
 import com.xixi.timetable.data.week.OddEven
@@ -8,12 +8,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * TimetableGridParser 的 JVM 单元测试（契约 §10.5）。
+ * TimetableLayoutParser 的 JVM 单元测试（契约 §10.5）。
  *
- * 布局常量贴近真实样张：列宽约 150px、行高约 57px、表头 y≈88。
+ * 布局常量贴近真实课表：列宽约 150、行高约 57、表头 y≈88（均为内部坐标尺度）。
  * 所有姓名/学号均为虚构，不含任何真实个人信息。
  */
-class TimetableGridParserTest {
+class TimetableLayoutParserTest {
 
     private val columnCenters = intArrayOf(250, 400, 550, 700, 850, 1000, 1150)
     private val weekdayNames = listOf("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
@@ -29,26 +29,26 @@ class TimetableGridParserTest {
 
     // ===================== 坐标构造 =====================
 
-    private fun headerLine(index: Int): OcrLine {
+    private fun headerLine(index: Int): PositionedText {
         val cx = columnCenters[index]
-        return OcrLine(weekdayNames[index], cx - 40, headerTop, cx + 40, headerBottom)
+        return PositionedText(weekdayNames[index], cx - 40, headerTop, cx + 40, headerBottom)
     }
 
-    private fun sectionLabel(section: Int): OcrLine {
+    private fun sectionLabel(section: Int): PositionedText {
         val cy = firstRowCenter + rowHeight * (section - 1)
-        return OcrLine(section.toString(), labelCenterX - 10, cy - 8, labelCenterX + 10, cy + 8)
+        return PositionedText(section.toString(), labelCenterX - 10, cy - 8, labelCenterX + 10, cy + 8)
     }
 
     /** 第 `column` 列、第 `section` 节格子内的第 `order` 行文字 */
-    private fun cellLine(text: String, column: Int, section: Int, order: Int): OcrLine {
+    private fun cellLine(text: String, column: Int, section: Int, order: Int): PositionedText {
         val cx = columnCenters[column]
         val cellTop = firstRowCenter + rowHeight * (section - 1) - cellTopOffset
         val top = cellTop + order * cellLineStep
-        return OcrLine(text, cx - 70, top, cx + 70, top + cellLineHeight)
+        return PositionedText(text, cx - 70, top, cx + 70, top + cellLineHeight)
     }
 
     /** 硬验收：产出的每一行都必须能被 TextImporter 成功解析 */
-    private fun assertAllParseable(result: TimetableGridParser.Result) {
+    private fun assertAllParseable(result: TimetableLayoutParser.Result) {
         if (result.lines.isEmpty()) return
         val parsed = TextImporter.parse(result.lines.joinToString("\n"))
         assertEquals("存在无法识别的行：${parsed.errors}", 0, parsed.errors.size)
@@ -59,7 +59,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `标准网格按列与节次还原课程`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -75,9 +75,9 @@ class TimetableGridParserTest {
         lines += cellLine("2.0/李四", 4, 3, 2)
         lines += cellLine("【2-8周】,A101", 4, 3, 3)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(lines.size, result.sourceLineCount)
         assertEquals(
             listOf(
@@ -93,7 +93,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `块内多行堆叠时合并为一条时段`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -103,9 +103,9 @@ class TimetableGridParserTest {
         lines += cellLine("2.0/王老师", 2, 2, 3)
         lines += cellLine("【1-4,6-16周】,3301", 2, 2, 4)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
 
         val expectedWeeks = WeekPatterns.fromRange(1, 4, OddEven.ALL) or
@@ -126,16 +126,16 @@ class TimetableGridParserTest {
 
     @Test
     fun `无节次标签时按 y 聚类得到相对节次`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
 
         lines += cellLine("★高等数学", 1, 1, 0)
         lines += cellLine("2.0/张三", 1, 1, 1)
         lines += cellLine("【1-8周】,3301", 1, 1, 2)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
         val parsed = TextImporter.parse(result.lines[0])
         assertEquals(1, parsed.items.size)
@@ -151,17 +151,17 @@ class TimetableGridParserTest {
     @Test
     fun `无星期表头且视觉行不可解析时返回 RAW 与空行`() {
         val lines = listOf(
-            OcrLine("★高等数学", 200, 100, 320, 112),
-            OcrLine("【1-16周】,3301", 200, 116, 320, 128),
-            OcrLine("★大学英语", 420, 220, 540, 232)
+            PositionedText("★高等数学", 200, 100, 320, 112),
+            PositionedText("【1-16周】,3301", 200, 116, 320, 128),
+            PositionedText("★大学英语", 420, 220, 540, 232)
         )
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
         // 这些视觉行里既没有「星期」也没有「节次」，交 TextImporter 必然全败。
         // Result.lines 的语义是「其中每一行都能被解析」，因此这里必须是 RAW + 空行，
-        // 由界面回填 OCR 原文 —— 而不是谎称「已重建 2 个时段」再让用户撞上「无法识别」。
-        assertEquals(TimetableGridParser.Mode.RAW, result.mode)
+        // 由界面回填原始文字 —— 而不是谎称「已重建 2 个时段」再让用户撞上「无法识别」。
+        assertEquals(TimetableLayoutParser.Mode.RAW, result.mode)
         assertTrue(result.lines.isEmpty())
         assertEquals(lines.size, result.sourceLineCount)
     }
@@ -171,13 +171,13 @@ class TimetableGridParserTest {
     @Test
     fun `无星期表头但视觉行自带星期与节次时降级为可解析的视觉行`() {
         val lines = listOf(
-            OcrLine("高等数学 张三 教一101 周一 第1-2节 1-16周", 60, 100, 900, 112),
-            OcrLine("大学英语 李四 A101 周三 第3-4节 2-8周", 60, 160, 900, 172)
+            PositionedText("高等数学 张三 教一101 周一 第1-2节 1-16周", 60, 100, 900, 112),
+            PositionedText("大学英语 李四 A101 周三 第3-4节 2-8周", 60, 160, 900, 172)
         )
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.VISUAL_LINES, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.VISUAL_LINES, result.mode)
         assertEquals(2, result.lines.size)
 
         val parsed = TextImporter.parse(result.lines.joinToString("\n"))
@@ -195,9 +195,9 @@ class TimetableGridParserTest {
 
     @Test
     fun `空输入返回空结果且不抛异常`() {
-        val result = TimetableGridParser.parse(emptyList())
+        val result = TimetableLayoutParser.parse(emptyList())
 
-        assertEquals(TimetableGridParser.Mode.RAW, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.RAW, result.mode)
         assertTrue(result.lines.isEmpty())
         assertEquals(0, result.sourceLineCount)
     }
@@ -206,7 +206,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `同一格内两个星号开头的课程被拆成两条`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -218,9 +218,9 @@ class TimetableGridParserTest {
         lines += cellLine("(0000000000)000000001", 2, 1, 4)
         lines += cellLine("【6周】,东盟足球场", 2, 1, 5)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(2, result.lines.size)
         assertEquals("体育,甘老师,东盟足球场,周三,第1-1节,7-17周", result.lines[0])
         assertEquals("体育,詹老师,东盟足球场,周三,第1-1节,6周", result.lines[1])
@@ -231,7 +231,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `块跨两个节次行时得到节次范围`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -241,12 +241,12 @@ class TimetableGridParserTest {
         for (order in 3..9) {
             lines += cellLine("实践环节说明$order", 2, 1, order)
         }
-        // 周次行是每格的最后一行（与真实样张一致）
+        // 周次行是每格的最后一行（与真实课表一致）
         lines += cellLine("【1-16周】,3301", 2, 1, 10)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
         val parsed = TextImporter.parse(result.lines[0])
         assertEquals(1, parsed.items.size)
@@ -260,17 +260,17 @@ class TimetableGridParserTest {
 
     @Test
     fun `文字残缺时仍输出一行且周次回退为全周`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
         lines += cellLine("★", 2, 1, 0)
         lines += cellLine("###", 2, 1, 1)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
         // 列与节次能定下来就必须产出行：宁可让用户改名字，也不能给 0 条
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
 
         val parsed = TextImporter.parse(result.lines[0])
@@ -290,19 +290,19 @@ class TimetableGridParserTest {
 
     @Test
     fun `周次里的点号按逗号解析并保持端到端一致`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
         lines += cellLine("★中级财务会计", 2, 1, 0)
         lines += cellLine("(0000000000)000000003", 2, 1, 1)
         lines += cellLine("2.0/赵一", 2, 1, 2)
-        // 真实样张：原文 `【1,4-6,17周】` 被 OCR 读成 `【1.4-6.17周】`
+        // 真实数据：原文 `【1,4-6,17周】` 里的逗号被读成点，写成 `【1.4-6.17周】`
         lines += cellLine("【1.4-6.17周】,2117", 2, 1, 3)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
 
         val expected = WeekPatterns.of(1) or WeekPatterns.of(4, 5, 6) or WeekPatterns.of(17)
@@ -315,11 +315,11 @@ class TimetableGridParserTest {
         assertAllParseable(result)
     }
 
-    // ===================== ⑩ ★ 被 OCR 吃掉：靠「周次行是块尾」切块 =====================
+    // ===================== ⑩ ★ 丢失：靠「周次行是块尾」切块 =====================
 
     @Test
     fun `星号丢失时靠周次行切分同一格内的两门课`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -327,13 +327,13 @@ class TimetableGridParserTest {
         lines += cellLine("(0000000000)000000000", 2, 1, 1)
         lines += cellLine("【7-17周】,东盟足球场", 2, 1, 2)
 
-        lines += cellLine("体育 / 詹老师 /", 2, 1, 3) // ★ 被 OCR 吃掉
+        lines += cellLine("体育 / 詹老师 /", 2, 1, 3) // ★ 丢失
         lines += cellLine("(0000000000)000000001", 2, 1, 4)
         lines += cellLine("【6周】,东盟足球场", 2, 1, 5)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(
             listOf(
                 "体育,甘老师,东盟足球场,周三,第1-1节,7-17周",
@@ -348,7 +348,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `表头缺列时星期号仍取自表头文字`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += listOf(2, 3, 4).map { headerLine(it) } // 只有周三、周四、周五
         lines += (1..4).map { sectionLabel(it) }
 
@@ -360,9 +360,9 @@ class TimetableGridParserTest {
         lines += cellLine("2.0/李四", 4, 1, 1)
         lines += cellLine("【2-8周】,A101", 4, 1, 2)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(
             listOf(
                 "高等数学,张三,3301,周三,第1-1节,1-16周",
@@ -378,24 +378,24 @@ class TimetableGridParserTest {
     @Test
     fun `页眉页脚噪声不入库且页眉大字号不影响切块`() {
         // 基线：同一格内两门课，第二门只有一行、不带 ★（只能靠 y 间隙切分）
-        val baseline = ArrayList<OcrLine>()
+        val baseline = ArrayList<PositionedText>()
         baseline += (0..6).map { headerLine(it) }
         baseline += (1..4).map { sectionLabel(it) }
         baseline += cellLine("★体育", 2, 1, 0)
         baseline += cellLine("(0000000000)000000000", 2, 1, 1)
         baseline += cellLine("3.0/甘老师", 2, 1, 2)
         baseline += cellLine("体育", 2, 1, 5) // 与上一行间隙 19px：大于正确阈值 12.8，小于被页眉抬高的阈值
-        val baselineResult = TimetableGridParser.parse(baseline)
+        val baselineResult = TimetableLayoutParser.parse(baseline)
 
         // 噪声：页眉两行（高 24px，是格内行高 8px 的 3 倍）+ 页脚一行
-        val noisy = ArrayList<OcrLine>(baseline)
-        noisy += OcrLine("2026-2027学年第1学期 个人课程表", 60, 20, 1200, 44)
-        noisy += OcrLine("学号：000000 学生姓名：某同学 所属班级：某班 总学分：29", 60, 48, 1200, 72)
-        noisy += OcrLine("备注 公选课程：示例课程[网络课]【某老师（4-15）】", 60, 900, 1200, 924)
+        val noisy = ArrayList<PositionedText>(baseline)
+        noisy += PositionedText("2026-2027学年第1学期 个人课程表", 60, 20, 1200, 44)
+        noisy += PositionedText("学号：000000 学生姓名：某同学 所属班级：某班 总学分：29", 60, 48, 1200, 72)
+        noisy += PositionedText("备注 公选课程：示例课程[网络课]【某老师（4-15）】", 60, 900, 1200, 924)
 
-        val result = TimetableGridParser.parse(noisy)
+        val result = TimetableLayoutParser.parse(noisy)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         // 页眉大字号不得抬高切块阈值：两门课仍须是两条
         assertEquals(2, baselineResult.lines.size)
         assertEquals(2, result.lines.size)
@@ -411,19 +411,19 @@ class TimetableGridParserTest {
 
     @Test
     fun `混合单双周的周次按片段生效`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
         lines += cellLine("★创业理论与实践", 2, 1, 0)
         lines += cellLine("(0000000000)000000005", 2, 1, 1)
         lines += cellLine("2.0/刘老师", 2, 1, 2)
-        // 真实样张写法：逗号被 OCR 读成点
+        // 真实数据写法：逗号被读成点
         lines += cellLine("【1-3(单),6.8-9周】,12138", 2, 1, 3)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
         val parsed = TextImporter.parse(result.lines[0])
         assertEquals(1, parsed.items.size)
@@ -436,7 +436,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `块内文字溢出到下一节中心时仍是单节`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -448,11 +448,11 @@ class TimetableGridParserTest {
             lines += cellLine("溢出文字$order", 2, 1, order)
         }
         // 末行 bottom=190 已越过第 2 节的行中心（187），但主体仍在第 1 节
-        lines += OcrLine("【1-16周】,3301", cx - 70, 182, cx + 70, 190)
+        lines += PositionedText("【1-16周】,3301", cx - 70, 182, cx + 70, 190)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
         val parsed = TextImporter.parse(result.lines[0])
         assertEquals(1, parsed.items.size)
@@ -465,7 +465,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `周次行与地点行被拆开时不会多出假课`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         lines += (0..6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
 
@@ -473,11 +473,11 @@ class TimetableGridParserTest {
         lines += cellLine("(0000000000)000000000", 2, 1, 1)
         lines += cellLine("2.0/张三", 2, 1, 2)
         lines += cellLine("【1-16周】", 2, 1, 3)
-        lines += cellLine("3301", 2, 1, 4) // 地点被 OCR 拆到下一行
+        lines += cellLine("3301", 2, 1, 4) // 地点被拆到下一行
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
         val parsed = TextImporter.parse(result.lines[0])
         assertEquals(1, parsed.items.size)
@@ -490,7 +490,7 @@ class TimetableGridParserTest {
 
     @Test
     fun `表头缺列时插值补列而不是把内容归到邻列`() {
-        val lines = ArrayList<OcrLine>()
+        val lines = ArrayList<PositionedText>()
         // 识别到周三、周四、周五、周日，缺周六
         lines += listOf(2, 3, 4, 6).map { headerLine(it) }
         lines += (1..4).map { sectionLabel(it) }
@@ -500,9 +500,9 @@ class TimetableGridParserTest {
         lines += cellLine("2.0/张三", 5, 1, 1)
         lines += cellLine("【1-16周】,3301", 5, 1, 2)
 
-        val result = TimetableGridParser.parse(lines)
+        val result = TimetableLayoutParser.parse(lines)
 
-        assertEquals(TimetableGridParser.Mode.GRID, result.mode)
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
         assertEquals(1, result.lines.size)
         val parsed = TextImporter.parse(result.lines[0])
         assertEquals(1, parsed.items.size)

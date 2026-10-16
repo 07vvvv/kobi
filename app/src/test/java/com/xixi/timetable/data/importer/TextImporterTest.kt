@@ -120,7 +120,7 @@ class TextImporterTest {
 
     @Test
     fun `周次片段正则必须单一来源且不吃掉行内星期`() {
-        // 锁住「TimetableGridParser 与 TextImporter 共用同一个片段正则」这一事实：
+        // 锁住「TimetableLayoutParser 与 TextImporter 共用同一个片段正则」这一事实：
         // 第三轮曾在 GridParser 里留过一份副本，TextImporter 侧修断言后副本漏改，
         // 导致切块信号与地点锚点继续按旧口径误判。这里直接对正则本身断言。
         val text = "高等数学 张三 教一101 周一 第1-2节 1-16周"

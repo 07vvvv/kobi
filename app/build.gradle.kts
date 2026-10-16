@@ -15,12 +15,6 @@ android {
         targetSdk = 35
         versionCode = 2
         versionName = "1.1"
-
-        // 只打包手机实际使用的 ABI：ML Kit 的 native 库每个 ABI 约 2 MB，
-        // 去掉 x86/x86_64 可抵消一部分体积增量（模拟器不在交付目标内）。
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
     }
 
     // 固定签名：用仓库内的 kobi.keystore（PKCS12，密码 android，别名 androiddebugkey）。
@@ -102,10 +96,7 @@ dependencies {
     // 避免传递依赖版本漂移导致编译失败。
     implementation(libs.kotlinx.coroutines.android)
 
-    // 图片识别课程：ML Kit 内置中文文本识别（模型打进 APK，不联网、不依赖 GMS）
-    implementation(libs.mlkit.text.recognition.chinese)
-
-    // JVM 单元测试：覆盖 TimetableGridParser 的网格重建逻辑（纯 Kotlin，不需要真机）。
+    // JVM 单元测试：覆盖 TimetableLayoutParser 的网格重建逻辑（纯 Kotlin，不需要真机）。
     // 由 CI 的 ./gradlew testDebugUnitTest 执行，见 .github/workflows/build-apk.yml。
     testImplementation(libs.junit)
 }

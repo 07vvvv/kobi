@@ -1,4 +1,4 @@
-package com.xixi.timetable.data.ocr
+package com.xixi.timetable.data.layout
 
 import com.xixi.timetable.data.importer.TextImporter
 import com.xixi.timetable.data.week.OddEven
@@ -9,8 +9,8 @@ import kotlin.math.roundToInt
 /**
  * 课表网格重建解析器（契约 §10.3）。
  *
- * 背景：课表截图的「星期」在表头、「节次」在最左列、课程文字在网格内部，三者物理上不在同一行，
- * 因此把 OCR 结果拼成纯文本逐行解析必然得到 0 条。本类改为**按坐标重建网格**：
+ * 背景：课表的「星期」在表头、「节次」在最左列、课程文字在网格内部，三者物理上不在同一行，
+ * 因此把定位文本按出现顺序拼起来逐行解析必然得到 0 条。本类改为**按坐标重建网格**：
  *
  * 1. 星期表头行 → 列中心（保留星期号；缺列时按主间距插值补列）；
  * 2. 最左列节次标签行 → 行中心（缺失时按 y 聚类兜底）；
@@ -21,7 +21,7 @@ import kotlin.math.roundToInt
  *
  * 本类为纯 Kotlin，零 `android.*` 依赖，可被 JVM 单元测试直接覆盖。
  */
-object TimetableGridParser {
+object TimetableLayoutParser {
 
     /** 解析模式。 */
     enum class Mode { GRID, VISUAL_LINES, RAW }
@@ -29,16 +29,43 @@ object TimetableGridParser {
     /**
      * @param lines 可直接交 `TextImporter` 成功解析的文本行（GRID 为规范化文本，VISUAL_LINES 为视觉行拼接）。
      *              语义保证：**非空 ⟺ 其中每一行都能被 `TextImporter` 解析成功**。
-     *              重建失败时必为空列表（此时 `mode` 为 [Mode.RAW]，界面据此回填 OCR 原文）。
+     *              重建失败时必为空列表（此时 `mode` 为 [Mode.RAW]，界面据此回填原始文字）。
      * @param mode 本次重建采用的模式
-     * @param sourceLineCount 输入 OCR 行数（用于区分「图中无文字」与「未能识别出课表结构」）
+     * @param sourceLineCount 输入的定位文本条数（用于区分「源头没有文字」与「未能识别出课表结构」）
      * @param droppedLineCount 降级路径中被丢弃（无法被解析）的视觉行数；GRID 与 RAW 恒为 0
+     *
+     * 另有一个可选入参 `cellBands`：来自 PDF 表格线的「格子行带」。传空时行为与从前完全一致
+     * （纯靠文字位置推断节次）；非空时用它精确定节次，见 [CellBand]。
      */
     data class Result(
         val lines: List<String>,
         val mode: Mode,
         val sourceLineCount: Int,
         val droppedLineCount: Int = 0
+    )
+
+    /**
+     * 来自 PDF 表格网格线的**格子行带**：某个星期列里的一个（可能由多行合并而成的）格子。
+     *
+     * 为什么要它：课表里一个格子只放一门课的四行元数据（课程名 / 课程号 / 学分教师 / 周次地点）。
+     * 实测真实教务课表 PDF（2026-10 抽样，横向 A4）：字号 11pt、格子内行距 14pt，
+     * 四行之间三个间隔合计 **42pt**，整块含字身约 53pt；而节次行高只有约 **30pt** ——
+     * 也就是说**一个格子的文字总高接近两节课**。所以「拿块的纵向范围去套节次带」会把
+     * 单节课普遍误判成连堂，文字里也没有节数信息。而表格线是几何事实：
+     * **合并格子的中间那条横线不会被画出来**，所以「哪条边界线存在」直接给出了格子的行跨度。
+     *
+     * @param weekday 星期几（1~7）
+     * @param top 格子纵向范围的上边（内部坐标，y 向下）
+     * @param bottom 格子纵向范围的下边
+     * @param startSection 该格子对应的起始节次
+     * @param endSection 该格子对应的结束节次
+     */
+    data class CellBand(
+        val weekday: Int,
+        val top: Int,
+        val bottom: Int,
+        val startSection: Int,
+        val endSection: Int
     )
 
     // ===================== 参数 =====================
@@ -55,7 +82,7 @@ object TimetableGridParser {
     /** y 聚类阈值下限：字高极小时避免把同一格的堆叠行拆散 */
     private const val MIN_CLUSTER_GAP = 8.0
 
-    /** 表头只有一列时的兜底列宽（样张约 150px） */
+    /** 表头只有一列时的兜底列宽（内部坐标尺度约 150） */
     private const val DEFAULT_COLUMN_SPACING = 150
 
     /** 课程名彻底提取不出来时的占位（仍然输出该行） */
@@ -64,7 +91,7 @@ object TimetableGridParser {
     /** 下边界 = 最后一个节次行中心 + 行距中位数 × 该系数 */
     private const val LOWER_BOUND_FACTOR = 1.2
 
-    /** 节次行少于 2 个时的行距兜底（样张约 57px） */
+    /** 节次行少于 2 个时的行距兜底（内部坐标尺度约 57） */
     private const val FALLBACK_ROW_HEIGHT = 57.0
 
     /**
@@ -82,7 +109,7 @@ object TimetableGridParser {
 
     /**
      * 页眉页脚噪声关键词：整行命中即排除。
-     * 这些词出现在教务系统截图的页眉（学期 / 学号 / 姓名 / 班级 / 学分）、页脚（备注）与工具栏上，
+     * 这些词出现在教务课表的页眉（学期 / 学号 / 姓名 / 班级 / 学分）、页脚（备注）与工具栏上，
      * 不会出现在课程格子里；不排除的话它们会被当成课程入库，用户会凭空多出几门课。
      */
     private val NOISE_KEYWORDS = arrayOf(
@@ -103,7 +130,7 @@ object TimetableGridParser {
     /** 节次标签：`08:00`（无节次号时按出现顺序编号） */
     private val TIME_LABEL_RE = Regex("""^\d{1,2}\s*[:：]\s*\d{2}$""")
 
-    /** 块首强制信号：★ 可能被 OCR 认成 `*` `☆` `※` */
+    /** 块首强制信号：★ 在不同来源里可能写成 `*` `☆` `※` */
     private val BULLET_RE = Regex("""^\s*[★☆*※▪●]""")
 
     /** 清洗课程名时剥离的块首符号 */
@@ -166,7 +193,7 @@ object TimetableGridParser {
 
     // ===================== 入口 =====================
 
-    fun parse(lines: List<OcrLine>): Result {
+    fun parse(lines: List<PositionedText>, cellBands: List<CellBand> = emptyList()): Result {
         val sourceLineCount = lines.size
         val cleaned = lines.filter { it.text.isNotBlank() }
         if (cleaned.isEmpty()) {
@@ -213,7 +240,7 @@ object TimetableGridParser {
             val sectionRows = buildSectionRows(sectionLabelLines, baseContent, averageHeight)
             if (sectionRows.isNotEmpty()) {
                 val content = applyLowerBound(baseContent, sectionRows, sectionLabelLines.isNotEmpty())
-                val rows = buildGridRows(content, columns, sectionRows, averageHeight)
+                val rows = buildGridRows(content, columns, sectionRows, averageHeight, cellBands)
                 if (rows.isNotEmpty()) {
                     // GRID 已产出行就不要再跑降级路径，避免同一时段出现两遍
                     return Result(rows, Mode.GRID, sourceLineCount)
@@ -245,7 +272,7 @@ object TimetableGridParser {
     private class SectionRow(val index: Int, val centerY: Int)
 
     /** 一行是否属于网格内部（排除最左节次列、星期表头、页眉页脚、表头之上的内容） */
-    private fun isGridContent(line: OcrLine, firstColumnBoundary: Int, headerBottom: Int?): Boolean {
+    private fun isGridContent(line: PositionedText, firstColumnBoundary: Int, headerBottom: Int?): Boolean {
         if (line.centerX < firstColumnBoundary) return false
         if (weekdayIndexOf(line.text) != null) return false
         if (isNoiseLine(line.text)) return false
@@ -259,10 +286,10 @@ object TimetableGridParser {
 
     /** 下边界之后（页脚）的内容剔除；无节次标签时不设下边界，只靠关键词兜底 */
     private fun applyLowerBound(
-        content: List<OcrLine>,
+        content: List<PositionedText>,
         sectionRows: List<SectionRow>,
         hasSectionLabels: Boolean
-    ): List<OcrLine> {
+    ): List<PositionedText> {
         if (!hasSectionLabels) return content
         val last = sectionRows.lastOrNull() ?: return content
         val lowerBound = last.centerY + (rowSpacingOf(sectionRows) * LOWER_BOUND_FACTOR).toInt()
@@ -279,11 +306,11 @@ object TimetableGridParser {
 
     /**
      * 由已识别的星期表头构造列：若相邻两列的间距接近主间距的整数倍，说明中间**缺了列**
-     * （OCR 漏识别某个「星期X」），就在中间插值补出列中心，星期号按左右邻列线性插值。
+     * （源头漏掉了某个「星期X」），就在中间插值补出列中心，星期号按左右邻列线性插值。
      *
      * 否则缺列一侧的内容会被最近中心吸走，整列错位到相邻星期。
      */
-    private fun buildColumns(detected: List<Pair<Int, OcrLine>>): List<GridColumn> {
+    private fun buildColumns(detected: List<Pair<Int, PositionedText>>): List<GridColumn> {
         if (detected.isEmpty()) return emptyList()
         if (detected.size == 1) {
             return listOf(GridColumn(detected[0].second.centerX, detected[0].first))
@@ -314,8 +341,8 @@ object TimetableGridParser {
     }
 
     private fun buildSectionRows(
-        labels: List<OcrLine>,
-        baseContent: List<OcrLine>,
+        labels: List<PositionedText>,
+        baseContent: List<PositionedText>,
         averageHeight: Double
     ): List<SectionRow> {
         if (labels.isNotEmpty()) {
@@ -332,7 +359,7 @@ object TimetableGridParser {
         // 会因为累计偏移而被拆成多个带，节次范围随之被撑大。
         if (baseContent.isEmpty()) return emptyList()
         val threshold = maxOf(averageHeight * GAP_FACTOR, MIN_CLUSTER_GAP)
-        val bands = ArrayList<Pair<Int, MutableList<OcrLine>>>()
+        val bands = ArrayList<Pair<Int, MutableList<PositionedText>>>()
         var previousCenterY: Int? = null
         for (line in baseContent.sortedBy { it.centerY }) {
             val previous = previousCenterY
@@ -352,10 +379,11 @@ object TimetableGridParser {
     }
 
     private fun buildGridRows(
-        content: List<OcrLine>,
+        content: List<PositionedText>,
         columns: List<GridColumn>,
         sectionRows: List<SectionRow>,
-        averageHeight: Double
+        averageHeight: Double,
+        cellBands: List<CellBand>
     ): List<String> {
         if (content.isEmpty() || columns.isEmpty()) return emptyList()
         val columnCenters = columns.map { it.centerX }
@@ -367,7 +395,7 @@ object TimetableGridParser {
             val weekday = columns.getOrNull(columnIndex)?.weekday ?: (columnIndex + 1)
             val columnLines = byColumn.getValue(columnIndex).sortedBy { it.centerY }
             for (block in splitIntoBlocks(columnLines, threshold)) {
-                output.add(buildRow(block, weekday, sectionRows))
+                output.add(buildRow(block, weekday, sectionRows, cellBands))
             }
         }
         return output
@@ -390,15 +418,15 @@ object TimetableGridParser {
     /**
      * 切块：间隙超阈值、行以 `★` 开头、或「块内已出现过周次而该行不再含周次」时开新块。
      *
-     * 第三个信号用于兜住 OCR 吃掉 `★` 且两门课纵向紧邻的情形：真实样张里周次行
+     * 第三个信号用于兜住 `★` 丢失且两门课纵向紧邻的情形：课表里周次行
      * （`/【周次】,地点`）是每格的最后一行，因此「周次之后又出现新内容」即意味着进入下一门课；
-     * 但周次行与地点行本身可能被 OCR 拆成两行，这时不能误切（见 [isBlockTailContinuation]）。
+     * 但周次行与地点行本身可能被拆成两行，这时不能误切（见 [isBlockTailContinuation]）。
      */
-    private fun splitIntoBlocks(sorted: List<OcrLine>, threshold: Double): List<List<OcrLine>> {
+    private fun splitIntoBlocks(sorted: List<PositionedText>, threshold: Double): List<List<PositionedText>> {
         if (sorted.isEmpty()) return emptyList()
-        val blocks = ArrayList<List<OcrLine>>()
-        var current = ArrayList<OcrLine>()
-        var previous: OcrLine? = null
+        val blocks = ArrayList<List<PositionedText>>()
+        var current = ArrayList<PositionedText>()
+        var previous: PositionedText? = null
         var currentHasWeek = false
         for (line in sorted) {
             val gap = if (previous == null) 0.0 else (line.top - previous.bottom).toDouble()
@@ -422,11 +450,11 @@ object TimetableGridParser {
     }
 
     /**
-     * 该行是否只是本块尾部（周次行 / 地点行）被 OCR 拆开的延续：
+     * 该行是否只是本块尾部（周次行 / 地点行）被拆开的延续：
      * 纯标点开头、纯数字、或命中地点特征时视为延续，不开新块 ——
      * 否则会多出一条只有地点、课程名为「未识别课程」的假课。
      */
-    private fun isBlockTailContinuation(line: OcrLine): Boolean {
+    private fun isBlockTailContinuation(line: PositionedText): Boolean {
         val text = line.text.trim()
         if (text.isEmpty()) return true
         if (text.first() in ",，.、;；:：|/】])）·") return true
@@ -435,7 +463,12 @@ object TimetableGridParser {
         return isPlaceLike(text)
     }
 
-    private fun buildRow(block: List<OcrLine>, weekday: Int, sectionRows: List<SectionRow>): String {
+    private fun buildRow(
+        block: List<PositionedText>,
+        weekday: Int,
+        sectionRows: List<SectionRow>,
+        cellBands: List<CellBand>
+    ): String {
         val blockText = block.sortedBy { it.top }.joinToString("\n") { it.text }
 
         // 逐项独立兜底：任何一项提取失败都不允许丢块
@@ -451,7 +484,7 @@ object TimetableGridParser {
         val weekMask = extractWeekMask(blockText)
             ?: WeekPatterns.fromRange(1, WeekPatterns.MAX_WEEKS, OddEven.ALL)
 
-        val range = sectionRange(block, sectionRows)
+        val range = sectionRange(block, weekday, sectionRows, cellBands)
         val day = weekdayName(weekday)
 
         val line = "${cleanField(name)},${cleanField(teacher)},${cleanField(location)},$day," +
@@ -471,7 +504,27 @@ object TimetableGridParser {
      * 用整体 `[minTop, maxBottom]` 的旧口径会被格子溢出文字带偏：单节块只要越过下一节的行中心
      * 就会被算成连堂；而真实连堂（块高≈2×rowSpacing）依然会命中两个带。
      */
-    private fun sectionRange(block: List<OcrLine>, sectionRows: List<SectionRow>): Pair<Int, Int> {
+    private fun sectionRange(
+        block: List<PositionedText>,
+        weekday: Int,
+        sectionRows: List<SectionRow>,
+        cellBands: List<CellBand>
+    ): Pair<Int, Int> {
+        // 优先用表格线给的格子行带：它是几何事实，能正确区分「单节课文字溢出」与「真正的连堂」。
+        // 一个格子的四行元数据总高常超过一节课的行高，只看块的纵向范围会把单节课普遍误判成连堂；
+        // 表格线里合并格子不画中间那条横线，「哪条边界线存在」才是节次数量的精确来源。
+        // 判据是「**块的顶边**最接近哪个格子的**上边界**」，而不是「块心落在哪个区间」：
+        // 课表格子里的文字是从格子左上角开始往下排的，四行元数据的总高又常常超过格子高度、
+        // 向下溢出，于是块心会明显偏离格子中心，只有块顶才稳定贴着格顶。
+        if (cellBands.isNotEmpty()) {
+            val anchor = block.minOfOrNull { it.top }
+            if (anchor != null) {
+                val band = cellBands
+                    .filter { it.weekday == weekday }
+                    .minByOrNull { abs(it.top - anchor) }
+                if (band != null) return band.startSection to maxOf(band.startSection, band.endSection)
+            }
+        }
         if (sectionRows.isEmpty()) return 1 to 1
         val top = block.minOf { it.top }.toDouble()
         val bottom = block.maxOf { it.bottom }.toDouble()
@@ -584,11 +637,11 @@ object TimetableGridParser {
     // ===================== 文本处理 =====================
 
     /** 视觉行：按 centerY 聚类，行内按 x 排序用空格连接 */
-    private fun visualLines(lines: List<OcrLine>, averageHeight: Double): List<String> {
+    private fun visualLines(lines: List<PositionedText>, averageHeight: Double): List<String> {
         if (lines.isEmpty()) return emptyList()
         val threshold = maxOf(averageHeight * GAP_FACTOR, MIN_CLUSTER_GAP)
         val result = ArrayList<String>()
-        var bucket = ArrayList<OcrLine>()
+        var bucket = ArrayList<PositionedText>()
         var lastCenterY = Int.MIN_VALUE
         for (line in lines.sortedBy { it.centerY }) {
             if (bucket.isNotEmpty() && abs(line.centerY - lastCenterY) > threshold) {
@@ -602,7 +655,7 @@ object TimetableGridParser {
         return result.filter { it.isNotBlank() }
     }
 
-    private fun joinBucket(bucket: List<OcrLine>): String =
+    private fun joinBucket(bucket: List<PositionedText>): String =
         bucket.sortedBy { it.left }.joinToString(" ") { it.text.trim() }.trim()
 
     /** 字段清洗：替换分隔符、删除空白，避免被 TextImporter 的 SEPARATOR_RE 二次拆开 */
@@ -656,7 +709,7 @@ object TimetableGridParser {
         }
     }
 
-    /** 相邻节次行中心的间距中位数；节次行不足 2 个时用样张行高兜底 */
+    /** 相邻节次行中心的间距中位数；节次行不足 2 个时用固定行高兜底 */
     private fun rowSpacingOf(sectionRows: List<SectionRow>): Double {
         if (sectionRows.size < 2) return FALLBACK_ROW_HEIGHT
         val gaps = (1 until sectionRows.size).map {
@@ -703,7 +756,7 @@ object TimetableGridParser {
     private val WEEKDAY_CHARS = arrayOf("一", "二", "三", "四", "五", "六", "日")
 
     /** 文本是否是星期表头；是则返回 1~7 */
-    private fun weekdayIndexOf(text: String): Int? {
+    internal fun weekdayIndexOf(text: String): Int? {
         val match = WEEKDAY_RE.find(text.trim()) ?: return null
         val token = match.groupValues[1]
         if (token == "日" || token == "天") return 7

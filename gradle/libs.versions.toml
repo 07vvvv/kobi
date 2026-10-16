@@ -9,7 +9,6 @@ composeBom = "2025.01.00"
 navigation = "2.8.5"
 room = "2.7.1"
 coroutines = "1.9.0"
-mlkitTextChinese = "16.0.1"
 junit = "4.13.2"
 
 [libraries]
@@ -31,7 +30,6 @@ room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
-mlkit-text-recognition-chinese = { group = "com.google.mlkit", name = "text-recognition-chinese", version.ref = "mlkitTextChinese" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

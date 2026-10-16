@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
@@ -46,9 +47,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xixi.timetable.data.conflict.Conflict
@@ -56,6 +60,7 @@ import com.xixi.timetable.data.entity.CourseEntity
 import com.xixi.timetable.data.entity.SessionEntity
 import com.xixi.timetable.data.week.WeekPatterns
 import com.xixi.timetable.ui.common.dayLabel
+import com.xixi.timetable.ui.common.sectionRangeText
 import com.xixi.timetable.ui.common.termStartMillisOf
 import com.xixi.timetable.ui.common.todayDateText
 import com.xixi.timetable.ui.common.weekIndexFromTermStart
@@ -71,13 +76,25 @@ private const val SECTION_COUNT = 12
 private val timeColumnWidth = 52.dp
 
 /** 单个星期列的宽度。 */
-private val dayColumnWidth = 96.dp
+private val dayColumnWidth = 112.dp
 
 /** 单节高度，连堂课程按节数累加。 */
 private val sectionHeight = 68.dp
 
 /** 星期表头高度。 */
 private val headerHeight = 44.dp
+
+/** 估算行高相对字号的倍数：显式设置 lineHeight，保证估算与实际渲染一致。 */
+private const val LINE_HEIGHT_RATIO = 1.4f
+
+/** 课程块上下被占掉的总高度：外层 padding 2dp×2 + 内层 padding 4dp×2。 */
+private const val BLOCK_VERTICAL_INSET_DP = 12f
+
+/** 课程名最多折行数。 */
+private const val MAX_NAME_LINES = 4
+
+/** 地点最多折行数。 */
+private const val MAX_LOCATION_LINES = 3
 
 /**
  * 周课表网格（时间 × 星期）。
@@ -139,6 +156,10 @@ fun WeekGridScreen(
         }
     }
 
+    // 点击课程块先弹详情面板；详情里的「去编辑」再走 onSessionClick，
+    // 因此原有「点击跳编辑页」的能力仍然可达，只是多了一层确认。
+    var detailSession by remember { mutableStateOf<SessionEntity?>(null) }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -187,12 +208,25 @@ fun WeekGridScreen(
                 blocksByDay = blocksByDay,
                 courseById = courseById,
                 conflictSessionIds = conflictSessionIds,
-                onSessionClick = onSessionClick,
+                onBlockClick = { session -> detailSession = session },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
             )
         }
+    }
+
+    val detail = detailSession
+    if (detail != null) {
+        SessionDetailDialog(
+            session = detail,
+            course = courseById[detail.courseId],
+            onDismiss = { detailSession = null },
+            onEdit = {
+                detailSession = null
+                onSessionClick(detail)
+            }
+        )
     }
 }
 
@@ -288,7 +322,7 @@ private fun GridBody(
     blocksByDay: List<List<GridBlock>>,
     courseById: Map<Long, CourseEntity>,
     conflictSessionIds: Set<Long>,
-    onSessionClick: (SessionEntity) -> Unit,
+    onBlockClick: (SessionEntity) -> Unit,
     modifier: Modifier = Modifier
 ) {
     // 表头与内容共用横向滚动状态；节次列与内容共用纵向滚动状态，从而实现同步。
@@ -427,7 +461,7 @@ private fun GridBody(
                                 course = courseById[block.session.courseId],
                                 hasConflict = conflictSessionIds.contains(block.session.id),
                                 dayIndex = dayIndex,
-                                onClick = { onSessionClick(block.session) }
+                                onClick = { onBlockClick(block.session) }
                             )
                         }
                     }
@@ -439,6 +473,9 @@ private fun GridBody(
 
 /**
  * 单个课程块。连堂课程由高度自然跨行。
+ *
+ * 字号与行数都不写死：列宽会被泳道数平分、块高随连堂节数变化，因此按块的实际
+ * 宽高（并结合用户的字体缩放）算出排版参数，保证课程名与地点都能完整读到。
  */
 @Composable
 private fun CourseBlock(
@@ -450,7 +487,13 @@ private fun CourseBlock(
 ) {
     val session = block.session
     val laneWidth = dayColumnWidth / block.laneCount
+    val blockHeight = sectionHeight * (session.endSection - session.startSection + 1)
     val shape = RoundedCornerShape(8.dp)
+
+    val fontScale = LocalDensity.current.fontScale
+    val metrics = remember(laneWidth, blockHeight, fontScale) {
+        blockTextMetrics(blockWidth = laneWidth, blockHeight = blockHeight, fontScale = fontScale)
+    }
 
     Box(
         modifier = Modifier
@@ -459,7 +502,7 @@ private fun CourseBlock(
                 y = sectionHeight * (session.startSection - 1)
             )
             .width(laneWidth)
-            .height(sectionHeight * (session.endSection - session.startSection + 1))
+            .height(blockHeight)
             .padding(2.dp)
             .clip(shape)
             .background(CoursePalette.colorOf(course?.colorIndex ?: 0))
@@ -482,20 +525,160 @@ private fun CourseBlock(
             Text(
                 text = course?.name ?: "未命名课程",
                 color = Color.White,
-                fontSize = 12.sp,
+                fontSize = metrics.nameFontSize,
+                lineHeight = metrics.nameLineHeight,
                 fontWeight = FontWeight.Medium,
-                maxLines = 3,
+                maxLines = metrics.nameMaxLines,
                 overflow = TextOverflow.Ellipsis
             )
             if (session.location.isNotBlank()) {
                 Text(
                     text = session.location,
-                    color = Color.White.copy(alpha = 0.88f),
-                    fontSize = 10.sp,
-                    maxLines = 2,
+                    color = Color.White.copy(alpha = 0.9f),
+                    fontSize = metrics.locationFontSize,
+                    lineHeight = metrics.locationLineHeight,
+                    maxLines = metrics.locationMaxLines,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+    }
+}
+
+/** 课程块内文字排版参数：字号、行高与行数上限，全部由块的可用宽高算出。 */
+private data class BlockTextMetrics(
+    val nameFontSize: TextUnit,
+    val nameLineHeight: TextUnit,
+    val nameMaxLines: Int,
+    val locationFontSize: TextUnit,
+    val locationLineHeight: TextUnit,
+    val locationMaxLines: Int
+)
+
+/**
+ * 按课程块的实际宽高估算文字排版。
+ *
+ * - 宽度：列宽被泳道数平分后可能只剩一半，因此字号随宽度降档（12 / 11 / 10 / 9sp），
+ *   两门课并排时自动降档，不再出现「两三个字就被省略号截断」。
+ * - 高度：先给地点留足 1 行，余量全部给课程名折行；再用剩余高度决定地点能显示几行。
+ * - 字体缩放：字号单位是 sp，会随系统字体大小放大，所以按 fontScale 折算成实际占位高度，
+ *   否则用户调大字体后文字会溢出到块外。
+ */
+private fun blockTextMetrics(
+    blockWidth: Dp,
+    blockHeight: Dp,
+    fontScale: Float
+): BlockTextMetrics {
+    val nameFontSize = when {
+        blockWidth >= 104.dp -> 12.sp
+        blockWidth >= 80.dp -> 11.sp
+        blockWidth >= 54.dp -> 10.sp
+        else -> 9.sp
+    }
+    val locationFontSize = if (blockWidth >= 80.dp) 10.sp else 9.sp
+
+    val nameLineHeight = (nameFontSize.value * LINE_HEIGHT_RATIO).sp
+    val locationLineHeight = (locationFontSize.value * LINE_HEIGHT_RATIO).sp
+
+    val usableHeight = (blockHeight.value - BLOCK_VERTICAL_INSET_DP).coerceAtLeast(1f)
+    val nameLineBox = (nameLineHeight.value * fontScale).coerceAtLeast(1f)
+    val locationLineBox = (locationLineHeight.value * fontScale).coerceAtLeast(1f)
+
+    // 先保住地点 1 行，剩下的高度给课程名折行
+    val heightForName = (usableHeight - locationLineBox).coerceAtLeast(nameLineBox)
+    val nameMaxLines = (heightForName / nameLineBox).toInt().coerceIn(1, MAX_NAME_LINES)
+
+    // 课程名占位后，用剩余的余量决定地点能显示几行
+    val heightForLocation = (usableHeight - nameMaxLines * nameLineBox)
+        .coerceAtLeast(locationLineBox)
+    val locationMaxLines = (heightForLocation / locationLineBox)
+        .toInt()
+        .coerceIn(1, MAX_LOCATION_LINES)
+
+    return BlockTextMetrics(
+        nameFontSize = nameFontSize,
+        nameLineHeight = nameLineHeight,
+        nameMaxLines = nameMaxLines,
+        locationFontSize = locationFontSize,
+        locationLineHeight = locationLineHeight,
+        locationMaxLines = locationMaxLines
+    )
+}
+
+/**
+ * 课程详情面板：完整展示课程名、教师、地点、星期、节次、周次（有备注也会列出）。
+ *
+ * 面板里所有文字都不设 maxLines，内容超高时整块可上下滚动，保证「完整不截断」。
+ */
+@Composable
+private fun SessionDetailDialog(
+    session: SessionEntity,
+    course: CourseEntity?,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = course?.name ?: "未命名课程",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                DetailRow(label = "教师", value = course?.teacher.orEmpty())
+                DetailRow(label = "地点", value = session.location)
+                DetailRow(label = "星期", value = dayLabel(session.dayOfWeek))
+                DetailRow(
+                    label = "节次",
+                    value = sectionRangeText(session.startSection, session.endSection)
+                )
+                DetailRow(label = "周次", value = WeekPatterns.describe(session.weekPattern))
+                DetailRow(label = "备注", value = course?.note.orEmpty())
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onEdit) {
+                Text(text = "去编辑")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "关闭")
+            }
+        }
+    )
+}
+
+/**
+ * 详情面板的一行。值为空时整行不渲染，避免出现「教师：」这类空条目。
+ */
+@Composable
+private fun DetailRow(label: String, value: String) {
+    if (value.isNotBlank()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(48.dp)
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
