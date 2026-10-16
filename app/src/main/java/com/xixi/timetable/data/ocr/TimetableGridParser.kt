@@ -109,13 +109,9 @@ object TimetableGridParser {
     /** 清洗课程名时剥离的块首符号 */
     private val BULLET_STRIP_RE = Regex("""^\s*[★☆*※▪●]+\s*""")
 
-    /**
-     * 含「周」的周次片段：用于**切块信号**与**地点锚点**（周次行之后就是地点）。
-     * 周次本身的解析全部委托给 `TextImporter.parseWeekPatternText`，保证口径单点。
-     */
-    private val WEEK_FRAGMENT_RE = Regex(
-        """\d{1,2}(?:\s*[-~—～至,，.]\s*\d{1,2}|\s*[（(]\s*[单双]\s*[)）])*\s*[（(]?\s*[单双]?\s*[)）]?\s*周\s*[（(]?\s*[单双]?\s*[)）]?"""
-    )
+    // 周次片段识别：**直接复用** `TextImporter` 里的那一份（单一来源），本文件不再保留副本。
+    // 该正则同时用于切块信号与地点锚点，必须与周次解析口径完全一致：曾经复制过副本，
+    // 结果上面「地点数字不得吞掉星期」的两条断言只修了 TextImporter 侧、副本漏修，两处行为漂移。
 
     /** 教师：`/中文2~4字/`（右侧斜杠可能被换行隔开） */
     private val SLASH_TEACHER_RE = Regex("""/\s*([\u4e00-\u9fa5]{2,4})\s*/""")
@@ -407,7 +403,7 @@ object TimetableGridParser {
         for (line in sorted) {
             val gap = if (previous == null) 0.0 else (line.top - previous.bottom).toDouble()
             val startsWithBullet = BULLET_RE.containsMatchIn(line.text)
-            val hasWeek = WEEK_FRAGMENT_RE.containsMatchIn(line.text)
+            val hasWeek = TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(line.text)
             // 该行本身可能只是本块尾部被拆开的延续（周次行之后的地点行），这时不能开新块
             val continuesBlock = isBlockTailContinuation(line)
             val startNew = current.isNotEmpty() &&
@@ -531,7 +527,7 @@ object TimetableGridParser {
      * 教学楼短串、纯数字（3301）、中文+数字（室外1）、纯中文（在线教学）都要能兜住。
      */
     private fun extractLocation(text: String, nameCandidate: String, teacher: String): String {
-        val weekMatch = WEEK_FRAGMENT_RE.find(text)
+        val weekMatch = TextImporter.WEEK_FRAGMENT_RE.find(text)
         if (weekMatch != null) {
             val candidate = firstSegmentAfterPunctuation(text.substring(weekMatch.range.last + 1))
             if (candidate.isNotEmpty() && !isStrongCode(candidate)) return candidate
@@ -539,7 +535,7 @@ object TimetableGridParser {
         val segments = splitSegments(text).map { cleanField(it) }.filter { it.isNotEmpty() }
         for (segment in segments.asReversed()) {
             if (segment == nameCandidate || segment == teacher) continue
-            if (isStrongCode(segment) || WEEK_FRAGMENT_RE.containsMatchIn(segment)) continue
+            if (isStrongCode(segment) || TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(segment)) continue
             if (isPlaceLike(segment)) return segment
         }
         return ""
@@ -559,7 +555,7 @@ object TimetableGridParser {
             .map { cleanField(stripCodes(it)) }
             .filter { it.isNotEmpty() && hasLetterOrDigit(it) }
             .filter { it != teacher && it != location }
-            .filter { !isCodeLike(it) && !WEEK_FRAGMENT_RE.containsMatchIn(it) }
+            .filter { !isCodeLike(it) && !TextImporter.WEEK_FRAGMENT_RE.containsMatchIn(it) }
         return candidates.maxByOrNull { it.length } ?: ""
     }
 

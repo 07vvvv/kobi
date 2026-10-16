@@ -117,4 +117,22 @@ class TextImporterTest {
         assertEquals("A3", single.items[0].location)
         assertTrue("周次应为 1-16 周", expected == single.items[0].weekPattern)
     }
+
+    @Test
+    fun `周次片段正则必须单一来源且不吃掉行内星期`() {
+        // 锁住「TimetableGridParser 与 TextImporter 共用同一个片段正则」这一事实：
+        // 第三轮曾在 GridParser 里留过一份副本，TextImporter 侧修断言后副本漏改，
+        // 导致切块信号与地点锚点继续按旧口径误判。这里直接对正则本身断言。
+        val text = "高等数学 张三 教一101 周一 第1-2节 1-16周"
+        assertEquals(
+            "片段应取到真正的周次，而不是「101 周一」里的「01 周」",
+            "1-16周",
+            TextImporter.WEEK_FRAGMENT_RE.find(text)?.value
+        )
+        assertEquals(
+            "单个数字地点同理",
+            "1-16周",
+            TextImporter.WEEK_FRAGMENT_RE.find("高等数学 张三 A3 周二 第1-2节 1-16周")?.value
+        )
+    }
 }
