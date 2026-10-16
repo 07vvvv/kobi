@@ -142,8 +142,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ImportKind.CSV -> CsvImporter.parse(text)
                 ImportKind.TEXT -> TextImporter.parse(text)
                 ImportKind.ICS -> IcsImporter.parse(text)
-                // 图片识别不经过本方法：导入页先 OCR 回填文本，再由用户按 TEXT 解析。
-                // 该分支若被真正走到，说明界面接线有误，明确报错而不是静默失败。
+                // 图片识别不经过本方法：导入页先 OCR（保留坐标）→ 按课表网格重建为规范化文本，
+                // 再由用户核对后按 TEXT 解析。该分支若被真正走到，说明界面接线有误，
+                // 明确报错而不是静默失败。
                 ImportKind.IMAGE -> ImportResult(
                     items = emptyList(),
                     errors = listOf("图片识别需先选择图片，识别结果会回填到文本框后再解析")

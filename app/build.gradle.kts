@@ -104,4 +104,8 @@ dependencies {
 
     // 图片识别课程：ML Kit 内置中文文本识别（模型打进 APK，不联网、不依赖 GMS）
     implementation(libs.mlkit.text.recognition.chinese)
+
+    // JVM 单元测试：覆盖 TimetableGridParser 的网格重建逻辑（纯 Kotlin，不需要真机）。
+    // 由 CI 的 ./gradlew testDebugUnitTest 执行，见 .github/workflows/build-apk.yml。
+    testImplementation(libs.junit)
 }

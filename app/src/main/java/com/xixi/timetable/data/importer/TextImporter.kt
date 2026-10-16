@@ -26,6 +26,19 @@ object TextImporter {
     /** 独立的单/双周标记，如「单周」「双周」 */
     private val WEEK_ODD_EVEN_RE = Regex("""([单双])\s*周""")
 
+    /**
+     * 含「周」的**完整**周次片段：允许「- , . 至」连接的区间与 `(单)/(双)` 混合出现。
+     *
+     * 整段抓取才能覆盖 `1-4,6-16周`（只有末段带「周」）与 `1-3(单),6.8-9周` 这类写法；
+     * 逐个 find 区间会只拿到最后一段，把前面的区间整段丢掉。
+     */
+    private val WEEK_FRAGMENT_RE = Regex(
+        """\d{1,2}(?:\s*[-~—～至,，.]\s*\d{1,2}|\s*[（(]\s*[单双]\s*[)）])*\s*[（(]?\s*[单双]?\s*[)）]?\s*周\s*[（(]?\s*[单双]?\s*[)）]?"""
+    )
+
+    /** OCR 把逗号读成点/圆点：仅当夹在数字之间时归一为逗号（周次里没有合法小数） */
+    private val DOT_BETWEEN_DIGITS_RE = Regex("""(?<=\d)[.．•·](?=\d)""")
+
     /** 节次区间，如「第1-2节」「3-4节」 */
     private val SECTION_RANGE_RE = Regex("""第?\s*(\d{1,2})\s*[-~—～至]\s*(\d{1,2})\s*节""")
 
@@ -99,49 +112,104 @@ object TextImporter {
     }
 
     /**
-     * 一次扫描解析周次文本，支持「区间 + 单双标记」的组合写法（契约 9.3）。
+     * 解析周次文本（契约 9.3 + 多区间合并）。
      *
-     * 「1-16周(单)」「1-16周,单周」「单周 1-16周」三种写法得到同一掩码；
-     * 完全未出现周次信息、或组合结果为空掩码时返回 null，由调用方决定兜底策略。
+     * - 先用 [WEEK_FRAGMENT_RE] 整段抓取含「周」的片段，再交 [parseWeekExpression] 逐段解析：
+     *   「1-4,6-16周」得到两段并集，「1-3(单),6.8-9周」里的「(单)」只作用于 1-3；
+     * - 抓不到含「周」的片段时，退一步在整个文本上再试一次（覆盖 CSV 周次列「1-16(单)」这类写法）；
+     * - 仍失败则回退 [WeekPatterns.parseText]，保证既有 CSV / 文本导入口径不回归。
      */
     internal fun parseWeekPatternText(text: String): Long? {
-        var oddEven = OddEven.ALL
-        var start = -1
-        var end = -1
-        var weeks: List<Int> = emptyList()
-
-        val rangeMatch = WEEK_RANGE_RE.find(text)
-        if (rangeMatch != null) {
-            start = rangeMatch.groupValues[1].toIntOrNull() ?: -1
-            end = rangeMatch.groupValues[2].toIntOrNull() ?: -1
-            oddEven = oddEvenOf(rangeMatch.groupValues[3])
-        } else {
-            val listMatch = WEEK_LIST_RE.find(text)
-            if (listMatch != null) {
-                weeks = listMatch.groupValues[1].split(WEEK_SEPARATOR_RE)
-                    .mapNotNull { it.trim().toIntOrNull() }
-                    .filter { it in 1..WeekPatterns.MAX_WEEKS }
-            }
+        // 独立的「单周/双周」标记必须先算出来，并在**两次**尝试里都传下去：
+        // 文本里可能完全没有含「周」的数字片段（CSV 周次列填「单周」、或行内只写「单周」），
+        // 此时若把 OddEven.ALL 传进去，单双周信息就会整条丢失、退化成「1-30 周全周」。
+        val standalone = standaloneOddEvenOf(text)
+        val fragment = WEEK_FRAGMENT_RE.find(text)?.value
+        if (fragment != null) {
+            parseWeekExpression(fragment, standalone)?.let { return it }
         }
-
-        // 独立的「单周」「双周」标记：即使已识别出区间也要吸收，避免标记被丢弃
-        if (oddEven == OddEven.ALL) {
-            val oddEvenMatch = WEEK_ODD_EVEN_RE.find(text)
-            if (oddEvenMatch != null) {
-                oddEven = oddEvenOf(oddEvenMatch.groupValues[1])
-            }
-        }
-
-        val mask = when {
-            start >= 1 && end >= start -> WeekPatterns.fromRange(start, end, oddEven)
-            weeks.isNotEmpty() -> WeekPatterns.of(*weeks.toIntArray())
-            oddEven != OddEven.ALL -> WeekPatterns.fromRange(1, WeekPatterns.MAX_WEEKS, oddEven)
-            else -> 0L
-        }
-        if (mask != 0L) return mask
-        // 回退：整串本身就是纯周次表达式（CSV 周次列常见「1-16(单)」「2,4,6」，不含「周」字）。
-        // 复用 WeekPatterns.parseText，保证与既有 CSV 导入口径一致、不产生回归。
+        parseWeekExpression(text, standalone)?.let { return it }
         return WeekPatterns.parseText(text)
+    }
+
+    /**
+     * 取出「不含数字的纯单双标记」（如「1-16周,单周」里的「单」）作为整串默认。
+     *
+     * 必须先剥离**最长的周次片段**：若先跑区间正则，会把片段拆碎、只留下 `(单)` 这类残骸，
+     * 于是「1-3(单),6.8-9周」被误判成整串单周，后面的 6、8 被过滤掉。
+     */
+    internal fun standaloneOddEvenOf(text: String): OddEven {
+        var stripped = WEEK_FRAGMENT_RE.replace(text, " ")
+        stripped = WEEK_RANGE_RE.replace(stripped, " ")
+        stripped = WEEK_LIST_RE.replace(stripped, " ")
+        // 必须要求「单/双」**紧邻「周」**（走 WEEK_ODD_EVEN_RE），不能用裸 contains：
+        // 否则课程名 / 教师名 / 地点里出现的「单」「双」（单片机原理、双语教学、单伟、双语楼）
+        // 会被当成整串单双周标记，把整门课的周次错误地过滤成单周或双周。
+        return oddEvenOf(WEEK_ODD_EVEN_RE.find(stripped)?.groupValues?.get(1).orEmpty())
+    }
+
+    /**
+     * 逐段解析周次表达式（区间 / 枚举 / 单双），文本导入与图片网格重建共用。
+     *
+     * - 单双周**逐片段局部绑定**：`1-3(单),6.8-9周` 里的「(单)」不会把后面的 6、8 过滤掉；
+     * - [defaultOddEven] 是整串默认（来自独立的「单周/双周」标记），片段自带标记优先级更高；
+     * - 单个片段解析失败只跳过该片段；全串都解析不出来时返回 null。
+     */
+    internal fun parseWeekExpression(raw: String, defaultOddEven: OddEven): Long? {
+        var text = raw.trim()
+        if (text.isEmpty()) return null
+        text = text.replace('（', '(').replace('）', ')')
+            .replace('，', ',').replace('、', ',')
+            .replace('－', '-').replace('—', '-').replace('~', '-').replace('～', '-')
+            .replace("至", "-")
+            .replace("【", " ").replace("】", " ")
+            .replace("[", " ").replace("]", " ")
+            .replace("{", " ").replace("}", " ")
+            .replace("〔", " ").replace("〕", " ")
+            .replace("第", "")
+            .replace("周", "")
+            .replace(" ", "").replace("\t", "")
+        // OCR 把逗号识别成点/圆点：夹在数字之间时归一为逗号（周次里没有合法小数）
+        text = DOT_BETWEEN_DIGITS_RE.replace(text, ",")
+        if (text.isEmpty()) return null
+
+        var mask = 0L
+        var matched = false
+        for (rawPart in text.split(',')) {
+            if (rawPart.isEmpty()) continue
+            var oddEven = defaultOddEven
+            if (rawPart.contains("单")) {
+                oddEven = OddEven.ODD
+            } else if (rawPart.contains("双")) {
+                oddEven = OddEven.EVEN
+            }
+            val part = rawPart.replace("单", "").replace("双", "")
+                .replace("(", "").replace(")", "")
+            if (part.isEmpty()) continue
+            val dash = part.indexOf('-')
+            if (dash > 0) {
+                val start = part.substring(0, dash).toIntOrNull() ?: continue
+                val end = part.substring(dash + 1).toIntOrNull() ?: continue
+                if (start < 1 || start > WeekPatterns.MAX_WEEKS || end < start) continue
+                mask = mask or WeekPatterns.fromRange(start, minOf(end, WeekPatterns.MAX_WEEKS), oddEven)
+                matched = true
+            } else {
+                val week = part.toIntOrNull() ?: continue
+                if (week < 1 || week > WeekPatterns.MAX_WEEKS) continue
+                matched = true
+                val keep = when (oddEven) {
+                    OddEven.ALL -> true
+                    OddEven.ODD -> week % 2 == 1
+                    OddEven.EVEN -> week % 2 == 0
+                }
+                if (keep) mask = mask or WeekPatterns.of(week)
+            }
+        }
+        if (matched && mask != 0L) return mask
+        if (defaultOddEven != OddEven.ALL) {
+            return WeekPatterns.fromRange(1, WeekPatterns.MAX_WEEKS, defaultOddEven)
+        }
+        return null
     }
 
     /** 解析单行；无法识别返回 null */
@@ -208,9 +276,16 @@ object TextImporter {
         )
     }
 
-    /** 把周次相关片段从文本中剥离（区间 → 枚举 → 单双标记） */
+    /**
+     * 把周次相关片段从文本中剥离（整段 → 区间 → 枚举 → 单双标记）。
+     *
+     * 必须先走 [WEEK_FRAGMENT_RE] **整段**剥离，才能与解析口径对齐：`1-4,6-16周` 里只有末段带
+     * 「周」，只跑区间正则会漏掉 `1-4`；残留的 `1-4` 随后会被 `classifyFields` 当成一个字段，
+     * 把真正的课程名挤掉（用户会看到课程名变成编号）。
+     */
     private fun stripWeekFragments(source: String): String {
-        var result = removeAll(source, WEEK_RANGE_RE.findAll(source).toList())
+        var result = removeAll(source, WEEK_FRAGMENT_RE.findAll(source).toList())
+        result = removeAll(result, WEEK_RANGE_RE.findAll(result).toList())
         result = removeAll(result, WEEK_LIST_RE.findAll(result).toList())
         result = removeAll(result, WEEK_ODD_EVEN_RE.findAll(result).toList())
         return result

@@ -51,6 +51,33 @@ jobs:
           java -version
           ./gradlew --version
 
+      - name: Run unit tests
+        run: |
+          set +e
+          ./gradlew testDebugUnitTest --console=plain > /tmp/test.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            # 提取单测失败摘要（编译错误与断言失败都要覆盖），写入 job summary 与注解，
+            # 便于在无法下载日志时（例如无 token 的匿名 API 调用）仍能读到第一手信息。
+            grep -E "^e: |error:|FAILURE: Build|What went wrong|Execution failed for task|Caused by:|> Task .*FAILED|Could not (resolve|find|determine)|[0-9]+ tests? completed, [0-9]+ failed|There were failing tests" /tmp/test.log \
+              | head -60 > /tmp/test-errors.txt || true
+            if [ ! -s /tmp/test-errors.txt ]; then tail -100 /tmp/test.log > /tmp/test-errors.txt; fi
+
+            {
+              echo "## Unit tests failed - error summary"
+              echo '```'
+              cat /tmp/test-errors.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            cat /tmp/test-errors.txt
+            head -20 /tmp/test-errors.txt | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error title=Unit test failure::$line"
+            done
+            exit 1
+          fi
+          echo "Unit tests passed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build debug and release APK
         run: |
           set +e

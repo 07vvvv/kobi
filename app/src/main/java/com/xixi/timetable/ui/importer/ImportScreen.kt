@@ -46,6 +46,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xixi.timetable.data.importer.ImportResult
 import com.xixi.timetable.data.ocr.ImageTextRecognizer
+import com.xixi.timetable.data.ocr.OcrLine
+import com.xixi.timetable.data.ocr.TimetableGridParser
 import com.xixi.timetable.ui.ImportKind
 import com.xixi.timetable.ui.MainViewModel
 import kotlinx.coroutines.launch
@@ -63,15 +65,19 @@ private val kindHints = listOf(
     ".ics 里的钟点时间会按作息表换算成节次：第 1-12 节的起始时间为 " +
         "08:00 / 08:55 / 10:00 / 10:55 / 14:00 / 14:55 / 16:00 / 16:55 / 19:00 / 19:55 / 20:50 / 21:45，" +
         "每节 55 分钟，匹配容差 30 分钟",
-    "点「选择图片」调用系统图片选择器（无需存储权限）。识别结果会覆盖填到上方文本框，" +
-        "请核对无误后再点「解析并导入」；图片识别不会跳过核对直接写入课表。"
+    "点「选择图片」调用系统图片选择器（无需存储权限）。识别后会先按课表网格重建：" +
+        "从表头识别星期、从最左列识别节次，把重建出的「星期 + 节次 + 课程」规范化文本" +
+        "填入上方文本框；若重建失败则退回 OCR 原始文字供手动整理。" +
+        "请核对无误后再点「解析并导入」——图片识别不会跳过核对直接写入课表。"
 )
 
 /**
  * 导入页：选择来源 → 粘贴内容或选图识别 → 解析导入 → 查看结果。
  *
- * 图片识别（[ImportKind.IMAGE]）只负责把图片转成文本并回填文本框，
- * 最终仍由用户点「解析并导入」按 TEXT 流程入库。
+ * 图片识别（[ImportKind.IMAGE]）分两步：先把 OCR 结果（带坐标）交给
+ * [TimetableGridParser] 做课表网格重建，把结果作为**规范化文本**回填文本框；
+ * 重建不出结构时退回 OCR 原文。两种情况都只回填文本，最终仍由用户点
+ * 「解析并导入」按 TEXT 流程入库，绝不跳过核对。
  *
  * @param onDone 导入结束后返回上一页。
  */
@@ -106,20 +112,54 @@ fun ImportScreen(
             status = "正在识别图片，请稍候…"
             scope.launch {
                 // 接口自身承诺不抛异常，这里再兜一层，保证界面永不崩。
-                val recognized = try {
+                val ocrLines: List<OcrLine> = try {
                     ImageTextRecognizer.recognize(context, picked)
                 } catch (t: Throwable) {
-                    ""
+                    emptyList()
                 }
                 busy = false
-                if (recognized.isBlank()) {
-                    status = "没有识别到文字，请换一张更清晰、文字更完整的图片重试"
-                } else {
-                    // 覆盖式回填到粘贴框，用户核对后仍需手动点「解析并导入」。
-                    text = recognized
-                    result = null
-                    val lineCount = recognized.split('\n').count { it.isNotBlank() }
-                    status = "已识别 $lineCount 行，请核对后再点「解析并导入」"
+
+                // 先做课表网格重建：课表截图的「星期」在表头、「节次」在最左列，
+                // 格子内没有这两个字样，直接按行解析必然全败，所以必须先按坐标重建。
+                val parsed: TimetableGridParser.Result? = try {
+                    TimetableGridParser.parse(ocrLines)
+                } catch (t: Throwable) {
+                    // 解析异常一律降级为「重建失败」，绝不让界面崩溃。
+                    null
+                }
+
+                val rebuilt = parsed?.lines.orEmpty()
+                // 解析器没给出原文行数时（异常降级），以 OCR 行数兜底判断「有没有识别到文字」
+                val sourceCount = parsed?.sourceLineCount ?: ocrLines.size
+                // 降级到视觉行重建时被丢弃（无法解析）的行数；GRID 与 RAW 恒为 0。
+                // 有丢弃却不告知用户，会让「重建成功」看起来比实际完整。
+                val dropped = parsed?.droppedLineCount ?: 0
+
+                when {
+                    rebuilt.isNotEmpty() -> {
+                        // 回填规范化文本（不是 OCR 原文），用户核对后仍需手动点「解析并导入」。
+                        text = rebuilt.joinToString("\n")
+                        result = null
+                        status = if (dropped > 0) {
+                            "已从图片重建 ${rebuilt.size} 个时段（另有 $dropped 行无法识别，未填入），" +
+                                "请核对后再点「解析并导入」"
+                        } else {
+                            "已从图片重建 ${rebuilt.size} 个时段，请核对后再点「解析并导入」"
+                        }
+                    }
+
+                    sourceCount > 0 -> {
+                        // 重建失败但确实识别到了文字：把 OCR 原文填入，交给用户手动整理。
+                        // 这与「完全没有文字」是两种不同的失败原因，提示不得混淆。
+                        text = ocrLines.joinToString("\n") { line -> line.text }
+                        result = null
+                        status = "识别到 $sourceCount 行文字，但未能识别出课表结构：" +
+                            "已把原始文字填入下方，可手动整理后再导入"
+                    }
+
+                    else -> {
+                        status = "没有识别到文字，请换一张更清晰、文字更完整的图片重试"
+                    }
                 }
             }
         }
