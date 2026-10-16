@@ -88,8 +88,16 @@ object TimetableLayoutParser {
     /** 课程名彻底提取不出来时的占位（仍然输出该行） */
     private const val UNKNOWN_COURSE = "未识别课程"
 
-    /** 下边界 = 最后一个节次行中心 + 行距中位数 × 该系数 */
-    private const val LOWER_BOUND_FACTOR = 1.2
+    /**
+     * 下边界 = 最后一个节次行中心 + 行距中位数 × 该系数。
+     *
+     * 取 2.5 而不是 1.2：真实课表最后一格的文字会**溢出到页面之外**（实测周二第 11-12 节的
+     * 那门「形势与政策」被画到 y=-33，而最后一个节次标签在第 12 节）—— 系数太小会把这一格
+     * 的课序号行与周次行整片删掉，只剩一条课程名、教师与地点全空的假记录。
+     * 放宽是安全的：页脚（`备注`、`公选课程…`）由 [isNoiseText] 的关键词整行兜底剔除，
+     * 不依赖这条下边界。
+     */
+    private const val LOWER_BOUND_FACTOR = 2.5
 
     /**
      * 认定为「上一行的续行」的最大长度（字符数）。
@@ -413,7 +421,11 @@ object TimetableLayoutParser {
         val output = ArrayList<String>()
         for (columnIndex in byColumn.keys.sorted()) {
             val weekday = columns.getOrNull(columnIndex)?.weekday ?: (columnIndex + 1)
-            val columnLines = byColumn.getValue(columnIndex).sortedBy { it.centerY }
+            // 列内**保持绘制顺序**，不按 centerY 重排：格子里的多门课是先后绘制的连续两段，
+            // 而不同课的行可以落在同一 y（实测周四第 5-6 节里 `/(202620271)07410033.` 与
+            // `02/周毅` 的 y 都是 305），按 y 排序会把它们交错在一起，块切分随之把两门课的
+            // 字段混在一块（现象：一条课名配了另一条课的教师与周次）。
+            val columnLines = byColumn.getValue(columnIndex)
             for (block in splitIntoBlocks(columnLines, threshold)) {
                 output.add(buildRow(block, weekday, sectionRows, cellBands))
             }
@@ -649,6 +661,11 @@ object TimetableLayoutParser {
                     .filter { it.weekday == weekday }
                     .minByOrNull { abs(it.top - anchor) }
                 if (band != null) return band.startSection to maxOf(band.startSection, band.endSection)
+                // 曾经的「块内还落着更靠后的节次标签就把 end 补上」被测试证伪并撤回：
+                // 单节格子的元数据本身就比一节课高，会一直排到下一节的节次标签之下，
+                // 那条规则会把「第3-3节」全带成连堂（`单节格子的课程不会被文字溢出带成连堂`
+                // 钉住了这一点），实测真实 PDF 里周四「大学外语A」也被带成了「第3-5节」。
+                // 宁可保留「文字溢出时时段偏短」这个已知偏差，也不能凭空造出连堂。
             }
         }
         if (sectionRows.isEmpty()) return 1 to 1
@@ -717,6 +734,17 @@ object TimetableLayoutParser {
         SLASH_TEACHER_RE.find(text)?.let { match ->
             val value = cleanField(match.groupValues[1])
             if (value.isNotEmpty()) return value
+        }
+        // 姓名被换行拆开时再试一次：格子里 `课序号/赵` + `亮/`、`…05/宋` + `满琴/` 是常态，
+        // 换行夹在姓与名之间会让 `/中文2~4字/` 匹配不到，教师就会退化成回退路径里的错片段
+        // （实测把 `★财务` 的续行 `管理` 当成了教师）。去掉换行不影响其它字段：
+        // 这里只用于匹配 `/xx/` 这一种形态。
+        val flattened = text.replace("\n", "")
+        if (flattened != text) {
+            SLASH_TEACHER_RE.find(flattened)?.let { match ->
+                val value = cleanField(match.groupValues[1])
+                if (value.isNotEmpty()) return value
+            }
         }
         for (segment in splitSegments(text)) {
             val cleaned = cleanField(segment)

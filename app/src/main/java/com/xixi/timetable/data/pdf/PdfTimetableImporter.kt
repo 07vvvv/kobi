@@ -193,15 +193,14 @@ object PdfTimetableImporter {
     /**
      * 把一页 PDF 的文本项还原成一行行带坐标的定位文本。
      *
-     * **先按表格列切开，再在每一列内部聚行**。这一步是必需的：教务课表 PDF 里每个字都是
-     * 独立文本项，而一个格子里的长字段（课程号 `/(202620271)08420000.05/宋` 有 21 个字符、
-     * 字号 8pt 时宽约 88pt）几乎铺满整列宽（实测列宽 106pt）；同一视觉行上相邻两个格子的
-     * 文字因此在 x 上互相穿插。若先全页聚行、再按 x 排序拼接（旧口径），就会得到
-     * `/(2026★20计271量)08经42济000学0.05/宋` 这种字符级乱码 —— 这不是个别格子，
-     * 而是所有「长字段行 + 邻格同行有字」的位置都会中招。
+     * **先按表格列切开，再在每一列内部按绘制顺序聚行**。两道工序各有职责：
      *
-     * 按列切开后，同一行里只会剩下同一个格子的文字，拼接自然正确。
-     * 列边界取自表格竖线，因此对没有竖线的 PDF 会自动退化成整页处理（见 [columnRanges]）。
+     * - **按列切开**是为了给「星期表头」分列：表头 `节次星期一星期二…星期日` 在 PDF 里是
+     *   一条横跨整页的文字行，整行匹配 `^(?:星期|周|礼拜)\s*([一二三四五六日天1-7])$` 必然失败；
+     *   按表格竖线切开后每一列各自得到完整的 `星期一`、`星期二`…，星期归属才定得下来。
+     *   列边界取自表格竖线，因此对没有竖线的 PDF 会自动退化成整页处理（见 [columnRanges]）。
+     * - **列内按绘制顺序聚行**（见 [reconstructRows]）才是行内容的正确来源：绘制顺序天然把
+     *   同一格子里先后绘制的多门课分开，而按 y 排序聚行会把它们揉成一行字符级乱码。
      */
     private fun toPositionedText(page: PdfPageText, observedTop: Float): List<PositionedText> {
         // 0) 先整行剔除页眉页脚：这些行横跨多个星期列，按列切开会只剩碎片、关键词不再完整。
@@ -238,7 +237,8 @@ object PdfTimetableImporter {
      */
     private fun dropNoiseRows(items: List<PdfTextItem>): List<PdfTextItem> {
         if (items.isEmpty()) return items
-        val sorted = items.sortedByDescending { it.y }
+        // 按**绘制顺序**聚行（见 [reconstructRows] 的说明）：这里绝不能按 y 排序，
+        // 否则同一 y 上分属不同格子/不同课程的多条行会被并成一行，关键词命中后一起删掉。
         val kept = ArrayList<PdfTextItem>(items.size)
         var row = ArrayList<PdfTextItem>()
         var rowY = Float.NaN
@@ -250,7 +250,7 @@ object PdfTimetableImporter {
             row = ArrayList()
         }
 
-        for (item in sorted) {
+        for (item in items) {
             if (row.isNotEmpty() && abs(item.y - rowY) > NOISE_ROW_TOLERANCE) flush()
             if (row.isEmpty()) rowY = item.y
             row.add(item)
@@ -263,18 +263,27 @@ object PdfTimetableImporter {
      * 把一组（某一表格列内、或所有列外）的文本项还原成一行行带坐标的定位文本。
      *
      * 两步：
-     * 1. **按基线聚行** —— 逐字定位的 PDF 里同一行文字的基线完全相同，按「字号 ×
-     *    [SAME_LINE_TOLERANCE]」的容差聚成一行；
+     * 1. **按绘制顺序聚行** —— 逐字定位的 PDF 里，生成器总是先写完一条视觉行才移下一条：
+     *    同一行的字符在内容流里**连续出现**、基线完全相同且 x 严格递增（实测真实课表
+     *    2185 个文本项全部满足）。因此判据是「y 相对上一项跳变超过字号 × [SAME_LINE_TOLERANCE]」，
+     *    **不是**「先按 y 排序再聚行」；
      * 2. **按水平间隙切片段** —— 同一行里可能还有多个要素（课程名 / 课程号 / 教师），
      *    其间的间隙远大于字间距，间隙超过「字号 × [SEGMENT_GAP_FACTOR]」就切开。
+     *
+     * 第 1 步为什么必须用绘制顺序：**同一格子里两门课的文字可以落在同一批基线上**。
+     * 实测星期四第 5-6 节的格子把「中级财务会计模拟实验」与「大学外语A3」两门课
+     * 排成同一个 y（`/【14-17周】,3310` 与 `★大学外语A` 出现在同一行、x 首尾相接）。
+     * 旧口径按 y 排序后聚行，会把这两门课的字符按 x 交错拼成一行，
+     * 得到 `/(2026★20计271量)08经42济000学0.05/宋` 这种字符级乱码，课程名与地点全部报废。
+     * 而它们在内容流里是**两段相隔数百项**的连续绘制，按绘制顺序切行即可完整分开。
      */
     private fun reconstructRows(items: List<PdfTextItem>, observedTop: Float): List<PositionedText> {
         if (items.isEmpty()) return emptyList()
 
-        // 1) 按基线 y 聚行。items 按 y 降序（PDF 里 y 越大越靠上），同行的项自然相邻。
+        // 1) 按绘制顺序聚行：保持 items 的原顺序，y 跳变即换行。
         val rows = ArrayList<MutableList<PdfTextItem>>()
         val baselines = ArrayList<Float>()
-        for (item in items.sortedByDescending { it.y }) {
+        for (item in items) {
             val last = rows.size - 1
             if (last >= 0 && abs(baselines[last] - item.y) <= fontSizeOf(item) * SAME_LINE_TOLERANCE) {
                 rows[last].add(item)
@@ -284,10 +293,11 @@ object PdfTimetableImporter {
             }
         }
 
-        // 2) 行内按 x 排序后切片段
+        // 2) 行内保持绘制顺序切片段：同一行内绘制顺序与 x 升序一致，两者等价；
+        //    但若出现 x 回退（同一视觉行上重新从左边起笔），绘制顺序才是正确口径。
         val result = ArrayList<PositionedText>()
         for (rowIndex in rows.indices) {
-            val sorted = rows[rowIndex].sortedBy { it.x }
+            val sorted = rows[rowIndex]
             val baselineY = baselines[rowIndex]
             var segment = ArrayList<PdfTextItem>()
             var segmentText = StringBuilder()
