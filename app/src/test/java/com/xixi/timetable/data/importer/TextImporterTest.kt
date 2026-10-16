@@ -93,4 +93,28 @@ class TextImporterTest {
         assertEquals("王五", parsed.items[0].teacher)
         assertEquals("B201", parsed.items[0].location)
     }
+
+    @Test
+    fun `地点数字紧邻星期时不得被当成周次片段`() {
+        // 真实故障（第三轮 CI 抓到）：周次正则允许数字与「周」之间有空格，
+        // 于是空格分隔的行里「教一101 周一」被切成「教一1」+「,」+「一」：
+        // 周次被误判成第 1 周、行内星期被吃掉、整行解析失败（用户看到「无法识别」）。
+        val expected = WeekPatterns.fromRange(1, 16, OddEven.ALL)
+        val parsed = TextImporter.parse("高等数学 张三 教一101 周一 第1-2节 1-16周")
+        assertEquals("空格分隔且地点紧邻星期时整行必须可解析", 1, parsed.items.size)
+        assertEquals("高等数学", parsed.items[0].name)
+        assertEquals("张三", parsed.items[0].teacher)
+        assertEquals("教一101", parsed.items[0].location)
+        assertEquals(1, parsed.items[0].dayOfWeek)
+        assertEquals(1, parsed.items[0].startSection)
+        assertEquals(2, parsed.items[0].endSection)
+        assertTrue("周次应为 1-16 周，而不是被截出来的第 1 周", expected == parsed.items[0].weekPattern)
+
+        // 单个数字地点（A3）后紧跟星期：连「01」都没有，靠「周后不得紧跟中文星期」兜住
+        val single = TextImporter.parse("高等数学 张三 A3 周二 第1-2节 1-16周")
+        assertEquals("单个数字地点紧邻星期时整行必须可解析", 1, single.items.size)
+        assertEquals(2, single.items[0].dayOfWeek)
+        assertEquals("A3", single.items[0].location)
+        assertTrue("周次应为 1-16 周", expected == single.items[0].weekPattern)
+    }
 }
