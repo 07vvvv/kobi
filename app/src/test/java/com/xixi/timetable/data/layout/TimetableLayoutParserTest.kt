@@ -89,6 +89,85 @@ class TimetableLayoutParserTest {
         assertAllParseable(result)
     }
 
+    // ===================== ①b 格子行带（cellBands 分支） =====================
+
+    /**
+     * 第 `section` 节、第 `column` 列的格子行带。
+     *
+     * 边界按 `firstRowCenter - rowHeight/2 + rowHeight * (section - 1)` 递推，相邻格子**首尾相接**
+     * （与 `PdfTimetableImporter.buildCellBands` 用同一批横线切出来的行带同构），
+     * 且每个节次标签中心都落在自己那条行带内。
+     */
+    private fun band(section: Int, column: Int = 2): TimetableLayoutParser.CellBand {
+        val top = firstRowCenter - rowHeight / 2 + rowHeight * (section - 1)
+        return TimetableLayoutParser.CellBand(
+            weekday = column + 1,
+            top = top,
+            bottom = top + rowHeight,
+            startSection = section,
+            endSection = section
+        )
+    }
+
+    private fun bands(from: Int, to: Int, column: Int = 2): List<TimetableLayoutParser.CellBand> =
+        (from..to).map { band(it, column) }
+
+    @Test
+    fun `有格子行带时格内第二条记录的节次取自它自己的块顶`() {
+        val lines = ArrayList<PositionedText>()
+        lines += (0..6).map { headerLine(it) }
+        lines += (1..4).map { sectionLabel(it) }
+
+        // 星期三第 1 节格子里**上下两条**记录，第二条的块顶在格子内部靠下（距格底还有 19px）。
+        // 旧口径「距最近格子上边界」会被下面那一格的格顶抢走，把它判成第 2 节；
+        // 而真实课表 PDF 里这种「一个格子堆两条」是常态（实测周一创业理论与实践、周四财务管理）。
+        lines += cellLine("★高等数学", 2, 1, 0)
+        lines += cellLine("(0000000000)000000000", 2, 1, 1)
+        lines += cellLine("2.0/张三", 2, 1, 2)
+        lines += cellLine("【1-16周】,3301", 2, 1, 3)
+        lines += cellLine("★线性代数", 2, 1, 4)
+        lines += cellLine("(0000000000)000000003", 2, 1, 5)
+        lines += cellLine("2.0/李四", 2, 1, 6)
+        lines += cellLine("【5-9周】,A201", 2, 1, 7)
+
+        val result = TimetableLayoutParser.parse(lines, bands(1, 4))
+
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
+        assertEquals(
+            listOf(
+                "高等数学,张三,3301,周三,第1-1节,1-16周",
+                "线性代数,李四,A201,周三,第1-1节,5-9周"
+            ),
+            result.lines
+        )
+        assertAllParseable(result)
+    }
+
+    @Test
+    fun `有格子行带时首行行高越过格顶仍归该格而不是上一格`() {
+        val lines = ArrayList<PositionedText>()
+        lines += (0..6).map { headerLine(it) }
+        lines += (1..4).map { sectionLabel(it) }
+
+        // 星期三第 2 节：首行的**行顶**越过格子上边界 2px，落进第 1 节格的下缘。
+        // 制表时给首行留的顶部间距（真实 PDF 实测 6pt）比字号上伸部（8~10pt）小，所以这是常态。
+        // 只按「块顶落在哪个格」判定会把整条课判进第 1 节 —— 必须认出这是「贴格顶」而不是「排在上格」。
+        val cx = columnCenters[2]
+        val lineTop = band(2).top - 2
+        lines += PositionedText("★概率论", cx - 70, lineTop, cx + 70, lineTop + cellLineHeight)
+
+        val result = TimetableLayoutParser.parse(lines, bands(1, 4))
+
+        assertEquals(TimetableLayoutParser.Mode.GRID, result.mode)
+        assertEquals(1, result.lines.size)
+        val parsed = TextImporter.parse(result.lines[0])
+        assertEquals(1, parsed.items.size)
+        assertEquals("概率论", parsed.items[0].name)
+        assertEquals(2, parsed.items[0].startSection)
+        assertEquals(2, parsed.items[0].endSection)
+        assertAllParseable(result)
+    }
+
     // ===================== ② 块内多行堆叠（课程名跨行） =====================
 
     @Test

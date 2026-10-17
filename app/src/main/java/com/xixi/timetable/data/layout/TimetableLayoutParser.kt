@@ -636,9 +636,15 @@ object TimetableLayoutParser {
     }
 
     /**
-     * 块的节次范围：每个节次带取 `[center − rowSpacing/2, center + rowSpacing/2]`，
-     * 按**纵向重叠长度**找出主节次，再把重叠达到「主重叠 × [OVERLAP_FACTOR]」的带纳入范围（取 min~max）。
+     * 块的节次范围。
      *
+     * 有格子行带（[cellBands]）时**只**用格子行带：判据是块顶落在哪个格子的 `[top, bottom)`
+     * 区间内，兜底才是「距最近格子上边界」。格子行带是几何事实，能正确区分「单节课文字
+     * 向下溢出」与「真正的连堂」——合并格不画中间那条横线，「哪条边界线存在」就是节次数量的
+     * 精确来源。
+     *
+     * 没有格子行带时才回退到按节次行算：每个节次带取 `[center − rowSpacing/2, center + rowSpacing/2]`，
+     * 按**纵向重叠长度**找出主节次，再把重叠达到「主重叠 × [OVERLAP_FACTOR]」的带纳入范围（取 min~max）。
      * 用整体 `[minTop, maxBottom]` 的旧口径会被格子溢出文字带偏：单节块只要越过下一节的行中心
      * 就会被算成连堂；而真实连堂（块高≈2×rowSpacing）依然会命中两个带。
      */
@@ -651,15 +657,39 @@ object TimetableLayoutParser {
         // 优先用表格线给的格子行带：它是几何事实，能正确区分「单节课文字溢出」与「真正的连堂」。
         // 一个格子的四行元数据总高常超过一节课的行高，只看块的纵向范围会把单节课普遍误判成连堂；
         // 表格线里合并格子不画中间那条横线，「哪条边界线存在」才是节次数量的精确来源。
-        // 判据是「**块的顶边**最接近哪个格子的**上边界**」，而不是「块心落在哪个区间」：
+        // 判据是「**块的顶边**落在哪个格子里」，而不是「块心落在哪个区间」：
         // 课表格子里的文字是从格子左上角开始往下排的，四行元数据的总高又常常超过格子高度、
         // 向下溢出，于是块心会明显偏离格子中心，只有块顶才稳定贴着格顶。
         if (cellBands.isNotEmpty()) {
             val anchor = block.minOfOrNull { it.top }
             if (anchor != null) {
-                val band = cellBands
-                    .filter { it.weekday == weekday }
-                    .minByOrNull { abs(it.top - anchor) }
+                val bands = cellBands.filter { it.weekday == weekday }
+                // 判据 A：块顶落在格子的**半开区间 [top, bottom)** 内 —— 与
+                // `PdfTimetableImporter.buildCellBands` 判断「节次标签属于哪个格子」用的是同一个
+                // 区间口径，两处保持同源。
+                val containing = bands
+                    .filter { anchor >= it.top && anchor < it.bottom }
+                    .minByOrNull { it.bottom - it.top }
+                // 判据 B：**首行的行高越界**。
+                // 「文字从格子左上角往下排」时，首行的**行顶（含 ascent）常常越过格子的上边界**：
+                // 生成器给首行留的顶部间距（实测 6pt）比字号上伸部（8~10pt）还小，于是行顶落进了
+                // **上面**那一格的下缘。此时判据 A 会把整条课判进上一格（实测：紧凑夹具里星期三
+                // 第 7-8 节的课被判成第 6-6 节、星期二第 3 节的课被判成第 1-2 节）。
+                // 特征很清楚：块顶距**所在格的下边界**不足半个行高 —— 一个真正排在格内靠下的块，
+                // 距离下边界要远得多（实测真实课表 PDF 里格内第二条记录的余量是 12.5pt 对 7pt 阈值）。
+                // 命中就越过那条线，归它**下面**紧邻的格子。
+                val halfLineHeight = ((block.minByOrNull { it.top }?.height ?: 1) / 2.0)
+                val escaped = containing != null &&
+                    containing.bottom - anchor <= halfLineHeight
+                val band = when {
+                    escaped -> containing?.let { bound ->
+                        bands.filter { it.top == bound.bottom }.minByOrNull { it.top }
+                    } ?: containing
+                    containing != null -> containing
+                    // 判据 C（兜底）：块顶不落在任何格子内（表头、页脚、非网格区域、表格最外边）
+                    // 时，退回「距最近格子上边界」的旧口径，保证仍然给出一个合法节次而不是丢掉这一格。
+                    else -> bands.minByOrNull { abs(it.top - anchor) }
+                }
                 if (band != null) return band.startSection to maxOf(band.startSection, band.endSection)
                 // 曾经的「块内还落着更靠后的节次标签就把 end 补上」被测试证伪并撤回：
                 // 单节格子的元数据本身就比一节课高，会一直排到下一节的节次标签之下，
