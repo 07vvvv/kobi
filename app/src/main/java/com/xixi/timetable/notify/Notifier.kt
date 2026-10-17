@@ -15,6 +15,7 @@ import com.xixi.timetable.R
 import com.xixi.timetable.data.CourseRepository
 import com.xixi.timetable.data.entity.CourseEntity
 import com.xixi.timetable.data.entity.SessionEntity
+import com.xixi.timetable.data.schedule.SectionTimeTable
 import com.xixi.timetable.data.week.WeekPatterns
 import java.time.Instant
 import java.time.LocalDate
@@ -196,7 +197,7 @@ object Notifier {
             }
 
             val title = "本周课表 · 第 $week 周"
-            val subtitle = buildSubtitle(sessions, nameById, termStart, zone)
+            val subtitle = buildSubtitle(context, sessions, nameById, termStart, zone)
 
             val refreshIntent = actionIntent(
                 context = context,
@@ -373,8 +374,11 @@ object Notifier {
     /**
      * 副标题：优先给「当前」——今天第一个尚未结束的时段（正在上或马上要上）；
      * 今天没课则给明天的第一节；两天都没课则如实说明。
+     *
+     * 下课时间取自用户配置的节次表（[SectionTimeTable]），越界节次由它夹紧。
      */
     private fun buildSubtitle(
+        context: Context,
         sessions: List<SessionEntity>,
         nameById: Map<Long, CourseEntity>,
         termStart: LocalDate,
@@ -385,7 +389,9 @@ object Notifier {
         if (todaySessions.isNotEmpty()) {
             val now = LocalTime.now(zone)
             // 「当前」= 今天第一个尚未结束的时段（正在上或马上要上）
-            val upcoming = todaySessions.firstOrNull { SectionTimes.endOf(it.endSection) > now }
+            val upcoming = todaySessions.firstOrNull {
+                SectionTimeTable.endOf(context, it.endSection) > now
+            }
             if (upcoming != null) return "当前：" + describe(upcoming, nameById)
             // 今天的课都上完了，就不再谎称「当前」，改为提示明天第一节
             val first = sessionsOfDay(sessions, today.plusDays(1), termStart).firstOrNull()

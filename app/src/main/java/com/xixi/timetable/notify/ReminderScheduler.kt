@@ -11,10 +11,11 @@ import com.xixi.timetable.MainActivity
 import com.xixi.timetable.data.CourseRepository
 import com.xixi.timetable.data.entity.CourseEntity
 import com.xixi.timetable.data.entity.SessionEntity
+import com.xixi.timetable.data.schedule.SectionTime
+import com.xixi.timetable.data.schedule.SectionTimeTable
 import com.xixi.timetable.data.week.WeekPatterns
 import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.CoroutineScope
@@ -179,6 +180,8 @@ object ReminderScheduler {
         val termStart = NotifyPrefs.termStartDate(context, zone)
         val now = System.currentTimeMillis()
         val nameById: Map<Long, CourseEntity> = courses.associateBy { it.id }
+        // 节次起止时间由用户在设置页配置（SectionTimeTable），这里一次性读出来，循环里用纯函数查表
+        val sectionTable: List<SectionTime> = SectionTimeTable.load(context)
 
         // 同一天只算一次「当天时段表」，顺便得到进行中通知要用的当天序号与总数
         val dayCache = HashMap<LocalDate, List<SessionEntity>>()
@@ -213,7 +216,7 @@ object ReminderScheduler {
                 val session = daySessions[index]
                 val course = nameById[session.courseId] ?: continue
                 val startAt = date
-                    .atTime(SectionTimes.startOf(session.startSection))
+                    .atTime(SectionTimeTable.startOf(sectionTable, session.startSection))
                     .atZone(zone)
                     .toInstant()
                     .toEpochMilli()
@@ -457,49 +460,6 @@ private data class TriggerGroup(
     val isDayFirstRemind: Boolean,
     val items: List<TriggerItem>
 )
-
-/**
- * 节次 → 具体时钟时间。
- *
- * 依据**契约 8.7 节冻结的唯一作息表**（与 data 的 ICS 导入共用同一张表）：
- * 1–12 节起始时间为
- * `08:00 / 08:55 / 10:00 / 10:55 / 14:00 / 14:55 / 16:00 / 16:55 / 19:00 / 19:55 / 20:50 / 21:45`，
- * 每节 45 分钟上课 + 10 分钟课间，**相邻节次起始时间间隔 55 分钟**，超过 12 节按 55 分钟递推。
- * （注：契约 8.1 节残留的 `21:40` 系笔误，以 8.7 节表格的 21:45 为准。）
- */
-internal object SectionTimes {
-
-    private val STARTS: List<LocalTime> = listOf(
-        LocalTime.of(8, 0),
-        LocalTime.of(8, 55),
-        LocalTime.of(10, 0),
-        LocalTime.of(10, 55),
-        LocalTime.of(14, 0),
-        LocalTime.of(14, 55),
-        LocalTime.of(16, 0),
-        LocalTime.of(16, 55),
-        LocalTime.of(19, 0),
-        LocalTime.of(19, 55),
-        LocalTime.of(20, 50),
-        LocalTime.of(21, 45)
-    )
-
-    /** 相邻节次起始时间的间隔：45 分钟上课 + 10 分钟课间（契约 8.7） */
-    private const val SECTION_INTERVAL_MINUTES: Long = 55L
-
-    /** 单节课时长（契约 8.7） */
-    private const val LESSON_MINUTES: Long = 45L
-
-    /** 第 section 节（1-based）的开始时间；越界值被夹紧并按 55 分钟递推，不会抛异常 */
-    fun startOf(section: Int): LocalTime {
-        val index = (section - 1).coerceAtLeast(0)
-        if (index < STARTS.size) return STARTS[index]
-        return STARTS.last().plusMinutes(SECTION_INTERVAL_MINUTES * (index - STARTS.size + 1))
-    }
-
-    /** 第 section 节的结束时间（开始 + 45 分钟），用于判断「当前正在上的是哪一节」 */
-    fun endOf(section: Int): LocalTime = startOf(section).plusMinutes(LESSON_MINUTES)
-}
 
 /**
  * 本模块自己的本地配置与排程记录。

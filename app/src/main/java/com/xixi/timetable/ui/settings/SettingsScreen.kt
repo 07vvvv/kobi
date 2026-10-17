@@ -29,11 +29,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,6 +49,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.xixi.timetable.data.schedule.SectionTime
+import com.xixi.timetable.data.schedule.SectionTimeTable
 import com.xixi.timetable.notify.Notifier
 import com.xixi.timetable.notify.PermissionAuditor
 import com.xixi.timetable.ui.common.KEY_TERM_START_MILLIS
@@ -53,8 +58,11 @@ import com.xixi.timetable.ui.common.SETTINGS_PREFS_NAME
 import com.xixi.timetable.ui.common.dayLabel
 import java.time.DayOfWeek
 import java.time.Instant
+import java.time.LocalTime
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
+import java.util.Locale
 
 /**
  * 设置页：权限自检、导入入口、通知测试。
@@ -80,6 +88,16 @@ fun SettingsScreen(
     var termStartMillis by remember { mutableStateOf(preferences.getLong(KEY_TERM_START_MILLIS, 0L)) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
+
+    // 节次时间表：逐节的开始/下课时间，通知据此推算每次上课的真实时刻。
+    // 直接读写 SectionTimeTable（内部为 SharedPreferences），不需要额外的 ViewModel 状态。
+    var sectionTimes by remember { mutableStateOf(SectionTimeTable.load(context)) }
+    // 正在编辑的节次；null 表示对话框已关闭
+    var editingSection by remember { mutableStateOf<Int?>(null) }
+    // 编辑目标是开始时间（true）还是下课时间（false）
+    var editingStartOfSection by remember { mutableStateOf(true) }
+    // 非法输入的提示；null 表示当前没有提示
+    var sectionHint by remember { mutableStateOf<String?>(null) }
 
     // 从系统设置页返回时自动重新读取真实权限状态
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -173,6 +191,66 @@ fun SettingsScreen(
                             ) {
                                 Text(text = "清除该设置")
                             }
+                        }
+                    }
+                }
+            }
+
+            item(key = "section-time-title") {
+                SectionTitle(text = "节次时间")
+            }
+
+            item(key = "section-time") {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        val hint = sectionHint
+                        if (hint != null) {
+                            Text(
+                                text = hint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                            HorizontalDivider()
+                        }
+                        sectionTimes.forEachIndexed { index, row ->
+                            SectionTimeRow(
+                                sectionTime = row,
+                                onEditStart = {
+                                    editingSection = row.section
+                                    editingStartOfSection = true
+                                },
+                                onEditEnd = {
+                                    editingSection = row.section
+                                    editingStartOfSection = false
+                                }
+                            )
+                            if (index != sectionTimes.lastIndex) {
+                                HorizontalDivider()
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "共 ${SectionTimeTable.MAX_SECTION} 节，点击时间可逐节修改开始与下课时刻。" +
+                                "通知按这里的时间推算，改完立即保存并重排提醒。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val defaults = SectionTimeTable.defaults()
+                                sectionTimes = defaults
+                                SectionTimeTable.save(context, defaults)
+                                sectionHint = null
+                                onReschedule()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            Text(text = "恢复默认")
                         }
                     }
                 }
@@ -422,6 +500,132 @@ fun SettingsScreen(
             DatePicker(state = datePickerState)
         }
     }
+
+    val editSection = editingSection
+    if (editSection != null) {
+        val row = sectionTimes.firstOrNull { it.section == editSection }
+        val initialTime = if (editingStartOfSection) row?.start else row?.end
+        SectionTimePickerDialog(
+            section = editSection,
+            isStart = editingStartOfSection,
+            initialHour = initialTime?.hour ?: 8,
+            initialMinute = initialTime?.minute ?: 0,
+            onDismiss = { editingSection = null },
+            onConfirm = { picked ->
+                val target = sectionTimes.firstOrNull { it.section == editSection }
+                when {
+                    target == null -> Unit
+
+                    editingStartOfSection && picked >= target.end -> {
+                        sectionHint = "第 $editSection 节的开始时间必须早于下课时间 " +
+                            "${formatLocalTime(target.end)}，本次修改未保存"
+                    }
+
+                    !editingStartOfSection && picked <= target.start -> {
+                        sectionHint = "第 $editSection 节的结束时间必须晚于开始时间 " +
+                            "${formatLocalTime(target.start)}，本次修改未保存"
+                    }
+
+                    else -> {
+                        val updated = sectionTimes.map { item ->
+                            if (item.section == editSection) {
+                                if (editingStartOfSection) {
+                                    item.copy(start = picked)
+                                } else {
+                                    item.copy(end = picked)
+                                }
+                            } else {
+                                item
+                            }
+                        }
+                        sectionTimes = updated
+                        SectionTimeTable.save(context, updated)
+                        sectionHint = null
+                        onReschedule()
+                    }
+                }
+                editingSection = null
+            }
+        )
+    }
+}
+
+/**
+ * 节次时间编辑对话框。
+ *
+ * Material3 只提供 TimePicker 本体、没有现成的 TimePickerDialog，因此自己套一层 AlertDialog。
+ * 用 key(section, isStart) 强制重建 TimePickerState：否则连续编辑不同节次时，
+ * 表盘会停留在上一次的初始值上（remember 只会保留第一次算出的值）。
+ */
+@Composable
+private fun SectionTimePickerDialog(
+    section: Int,
+    isStart: Boolean,
+    initialHour: Int,
+    initialMinute: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (LocalTime) -> Unit
+) {
+    key(section, isStart) {
+        val timePickerState = rememberTimePickerState(
+            initialHour = initialHour,
+            initialMinute = initialMinute,
+            is24Hour = true
+        )
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = {
+                Text(text = "第 $section 节 · " + (if (isStart) "开始时间" else "下课时间"))
+            },
+            text = {
+                TimePicker(state = timePickerState)
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onConfirm(LocalTime.of(timePickerState.hour, timePickerState.minute))
+                    }
+                ) {
+                    Text(text = "确定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text(text = "取消")
+                }
+            }
+        )
+    }
+}
+
+/**
+ * 节次时间表的一行：第 N 节 + 开始 / 下课两个可点的时间按钮。
+ */
+@Composable
+private fun SectionTimeRow(
+    sectionTime: SectionTime,
+    onEditStart: () -> Unit,
+    onEditEnd: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "第 ${sectionTime.section} 节",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedButton(onClick = onEditStart) {
+            Text(text = formatLocalTime(sectionTime.start))
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        OutlinedButton(onClick = onEditEnd) {
+            Text(text = formatLocalTime(sectionTime.end))
+        }
+    }
 }
 
 /**
@@ -448,6 +652,15 @@ private fun formatDate(localMillis: Long): String {
     val date = Instant.ofEpochMilli(localMillis).atZone(ZoneId.systemDefault()).toLocalDate()
     return "$date（${dayLabel(date.dayOfWeek.value)}）"
 }
+
+/** 节次时间的统一显示格式：24 小时制 HH:mm。 */
+private val SectionTimeFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA)
+
+/**
+ * 把节次时间格式化成 HH:mm。
+ */
+private fun formatLocalTime(time: LocalTime): String = time.format(SectionTimeFormatter)
 
 /**
  * 小节标题。
